@@ -17,6 +17,7 @@ import subprocess
 import sys
 import os
 import shutil
+import re
 
 
 def ensure_nbconvert_installed():
@@ -29,6 +30,7 @@ def ensure_nbconvert_installed():
     """
     try:
         import nbconvert  # type: ignore
+
         return True
     except Exception:
         print("`nbconvert` not found — attempting to install via pip...")
@@ -132,6 +134,14 @@ def convert_ipynb_to_md(input_file, output_file=None):
             if os.path.exists(generated_md):
                 with open(generated_md, "r", encoding="utf-8") as fh:
                     md_text = fh.read()
+
+                # Remove any <style>...</style> blocks that nbconvert may embed
+                # (commonly produced by pandas DataFrame HTML output). This
+                # prevents CSS like the `.dataframe` block from appearing in
+                # the final Markdown.
+                md_text = re.sub(
+                    r"<style.*?>.*?</style>\s*", "", md_text, flags=re.S | re.I
+                )
 
                 # Replace occurrences like "inputbase_files/" and "./inputbase_files/"
                 src_folder = input_base + "_files"
