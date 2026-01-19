@@ -11,7 +11,8 @@ License: MIT
 
 ```python
 # !python -m pip install --upgrade pip
-# %pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# %pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124  # Windows with CUDA 12.4
+# # %pip install torch  # MacOS or CPU-only
 # %pip install pandas matplotlib
 # %pip install scikit-learn
 ```
@@ -56,7 +57,7 @@ torch.manual_seed(SEED)
 
 
 
-    <torch._C.Generator at 0x1d2f9f10750>
+    <torch._C.Generator at 0x104446eb0>
 
 
 
@@ -237,8 +238,7 @@ else:
     for chunk in pd.read_csv(DATA_PATH, chunksize=CHUNK_SIZE):
         chunks.append(chunk)
     df = pd.concat(chunks, ignore_index=True)
-    del chunks  # Free memory
-    
+    del chunks  # Free memory  
 df
 ```
 
@@ -246,6 +246,19 @@ df
 
 
 <div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
 <table border="1" class="dataframe">
   <thead>
     <tr style="text-align: right;">
@@ -370,7 +383,7 @@ df.info()
      4   species       150 non-null    object 
     dtypes: float64(4), object(1)
     memory usage: 6.0+ KB
-    
+
 
 ## Clean Dataset
 
@@ -391,6 +404,8 @@ df.isna().sum()
 
 
 
+## Feature Engineer Dataset
+
 
 ```python
 df["species"] = df["species"].map({
@@ -405,7 +420,19 @@ df.head()
 
 
 <div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
 
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
 <table border="1" class="dataframe">
   <thead>
     <tr style="text-align: right;">
@@ -464,7 +491,7 @@ df.head()
 
 
 
-## Feature Statistical Significance (P-Values)
+## Identify Feature Statistical Significance (P-Values)
 
 
 ```python
@@ -479,7 +506,6 @@ if MODE == "classification":
     f_scores, p_values = f_classif(X_stats, y_stats)
 else:
     f_scores, p_values = f_regression(X_stats, y_stats)
-    
 f_scores, p_values
 ```
 
@@ -515,7 +541,7 @@ print("Note: P-value < 0.05 indicates statistically significant feature")
     petal_width                959.32        4.38e-85      ✓ Yes
     -------------------------------------------------------
     Note: P-value < 0.05 indicates statistically significant feature
-    
+
 
 
 ```python
@@ -532,7 +558,7 @@ plt.show()
 
 
     
-![png](I-MLP_files/I-MLP_34_0.png)
+![png](README_files/I-MLP_35_0.png)
     
 
 
@@ -592,8 +618,7 @@ if torch.cuda.is_available():
 elif torch.backends.mps.is_available():
     DEVICE = torch.device("mps")
 else:
-    DEVICE = torch.device("cpu")
-    
+    DEVICE = torch.device("cpu")    
 model = Model().to(DEVICE)
 model
 ```
@@ -618,7 +643,7 @@ next(model.parameters()).device
 
 
 
-    device(type='cuda', index=0)
+    device(type='mps', index=0)
 
 
 
@@ -841,8 +866,7 @@ if MODE == "classification":
 else:
     train_idx, test_idx = train_test_split(
         np.arange(len(X)), test_size=TEST_SIZE, random_state=SEED
-    )
-    
+    )   
 X_train, X_test = X[train_idx], X[test_idx]
 y_train, y_test = y[train_idx], y[test_idx]
 len(train_idx), len(test_idx)
@@ -1211,6 +1235,7 @@ optimizer
         amsgrad: False
         betas: (0.9, 0.999)
         capturable: False
+        decoupled_weight_decay: True
         differentiable: False
         eps: 1e-08
         foreach: None
@@ -1281,30 +1306,56 @@ for i in range(EPOCHS):
     Epoch 70/100 - Training Loss: 0.0596 - Validation Loss: 0.0658
     Epoch 80/100 - Training Loss: 0.0557 - Validation Loss: 0.0589
     Epoch 90/100 - Training Loss: 0.0787 - Validation Loss: 0.0535
-    
+
 
 ## Evaluate Model
 
 
 ```python
 model.eval()
+```
 
+
+
+
+    Model(
+      (fc1): Linear(in_features=4, out_features=8, bias=True)
+      (fc2): Linear(in_features=8, out_features=8, bias=True)
+      (out): Linear(in_features=8, out_features=3, bias=True)
+      (dropout): Dropout(p=0.0, inplace=False)
+    )
+
+
+
+
+```python
 total_val_loss = 0.0
+total_val_loss
+```
 
+
+
+
+    0.0
+
+
+
+
+```python
 with torch.no_grad():
     for X_batch, y_batch in test_loader:
         y_eval = model(X_batch)
         total_val_loss += criterion(y_eval, y_batch).item()
 val_loss = total_val_loss / len(test_loader)
+val_loss
 ```
 
 
-```python
-print(f"Validation Loss: {val_loss:.4f}")
-```
 
-    Validation Loss: 0.0549
-    
+
+    0.05494216736406088
+
+
 
 
 ```python
@@ -1377,7 +1428,7 @@ else:
     Test Accuracy: 0.9778 (44/45)
     Training Loss: 0.0516
     Validation Loss: 0.0549
-    
+
 
 
 ```python
@@ -1420,7 +1471,7 @@ else:
 
 
     
-![png](I-MLP_files/I-MLP_68_0.png)
+![png](README_files/I-MLP_70_0.png)
     
 
 
@@ -1438,7 +1489,7 @@ plt.show()
 
 
     
-![png](I-MLP_files/I-MLP_69_0.png)
+![png](README_files/I-MLP_71_0.png)
     
 
 
@@ -1451,7 +1502,7 @@ print("Model saved to iris_model.pth")
 ```
 
     Model saved to iris_model.pth
-    
+
 
 ## Load Model
 
@@ -1464,7 +1515,7 @@ print("Model loaded from iris_model.pth")
 ```
 
     Model loaded from iris_model.pth
-    
+
 
 ## Inference
 
@@ -1484,9 +1535,7 @@ def predict(model, features, mode=MODE):
                                    For regression: predicted value.
     """
     species_map = {0: "setosa", 1: "versicolor", 2: "virginica"}
-
     model.eval()
-    
     with torch.no_grad():
         X_new = torch.tensor(features).float().to(DEVICE)
         
@@ -1521,4 +1570,4 @@ else:
     Input: [5.1, 3.5, 1.4, 0.2]
     Predicted Species: setosa
     Confidence: 99.91%
-    
+
