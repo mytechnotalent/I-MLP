@@ -135,22 +135,24 @@ def convert_ipynb_to_md(input_file, output_file=None):
                 with open(generated_md, "r", encoding="utf-8") as fh:
                     md_text = fh.read()
 
-                # Remove any <style>...</style> blocks that nbconvert may embed
-                # (commonly produced by pandas DataFrame HTML output). This
-                # prevents CSS like the `.dataframe` block from appearing in
-                # the final Markdown.
-                md_text = re.sub(
-                    r"<style.*?>.*?</style>\s*", "", md_text, flags=re.S | re.I
-                )
+            # Remove only <style ... scoped ...>...</style> blocks (nbconvert / pandas
+            # sometimes writes scoped styles for HTML table outputs). We target
+            # `scoped` specifically so other embedded styles remain untouched.
+            md_text = re.sub(
+                r"<style[^>]*\bscoped\b[^>]*>.*?</style>\s*",
+                "",
+                md_text,
+                flags=re.S | re.I,
+            )
 
-                # Replace occurrences like "inputbase_files/" and "./inputbase_files/"
-                src_folder = input_base + "_files"
-                dst_folder = out_base + "_files"
-                if src_folder != dst_folder:
-                    md_text = md_text.replace(src_folder + "/", dst_folder + "/")
-                    md_text = md_text.replace("./" + src_folder + "/", dst_folder + "/")
-                    with open(generated_md, "w", encoding="utf-8") as fh:
-                        fh.write(md_text)
+            # Replace occurrences like "inputbase_files/" and "./inputbase_files/"
+            src_folder = input_base + "_files"
+            dst_folder = out_base + "_files"
+            if src_folder != dst_folder:
+                md_text = md_text.replace(src_folder + "/", dst_folder + "/")
+                md_text = md_text.replace("./" + src_folder + "/", dst_folder + "/")
+                with open(generated_md, "w", encoding="utf-8") as fh:
+                    fh.write(md_text)
         except Exception as e:
             # Non-fatal: continue and move files if possible
             print(f"Warning: failed to rewrite resource links: {e}")
