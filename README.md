@@ -1,4 +1,4 @@
-# Iris Dataset - MLP
+# Iris - MLP
 
 ### [dataset](https://www.kaggle.com/datasets/himanshunakrani/iris-dataset)
 
