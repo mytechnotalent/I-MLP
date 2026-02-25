@@ -1,6 +1,6 @@
 # Iris - MLP
 
-### [dataset](https://www.kaggle.com/datasets/himanshunakrani/iris-dataset)
+### [Dataset](https://www.kaggle.com/datasets/himanshunakrani/iris-dataset)
 
 Author: [Kevin Thomas](mailto:ket189@pitt.edu)
 
@@ -20,34 +20,41 @@ License: MIT
 # %pip install black
 # %pip install black[jupyter]
 # %pip install nbqa
+# %pip install scipy
 ```
 
 ## Import Libraries
 
 
 ```python
+import warnings
+import sqlite3
 from itertools import combinations
+import joblib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
 import shap
-import joblib
+from scipy import stats
 from sklearn.metrics import (
+    accuracy_score,
+    auc,
     classification_report,
     confusion_matrix,
+    normalized_mutual_info_score,
+    precision_recall_fscore_support,
     roc_auc_score,
     roc_curve,
-    auc,
-    precision_recall_fscore_support,
-    accuracy_score,
 )
-from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+
+warnings.filterwarnings("ignore", message=".*global RNG.*", category=FutureWarning)
 ```
 
 ## Seed
@@ -55,18 +62,6 @@ from torch.utils.data import DataLoader
 
 ```python
 SEED = 42
-SEED
-```
-
-
-
-
-    42
-
-
-
-
-```python
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 ```
@@ -78,158 +73,53 @@ torch.manual_seed(SEED)
 
 
 
+## Device
+
+
+```python
+if torch.cuda.is_available():
+    DEVICE = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    DEVICE = torch.device("mps")
+else:
+    DEVICE = torch.device("cpu")
+DEVICE
+```
+
+
+
+
+    device(type='mps')
+
+
+
 ## Parameters
 
 
 ```python
-IN_FEATURES = 6
-IN_FEATURES
-```
-
-
-
-
-    6
-
-
-
-
-```python
 H1 = 8
-H1
-```
-
-
-
-
-    8
-
-
-
-
-```python
 H2 = 8
-H2
-```
-
-
-
-
-    8
-
-
-
-
-```python
 OUT_FEATURES = 3
-OUT_FEATURES
-```
-
-
-
-
-    3
-
-
-
-
-```python
 TEST_SIZE = 0.3
-TEST_SIZE
-```
-
-
-
-
-    0.3
-
-
-
-
-```python
 DATA_PATH = "iris.csv"
-DATA_PATH
+TARGET_VAR = "species"
+CLASS_NAMES = ["Setosa", "Versicolor", "Virginica"]
+SPECIES_MAP = {0: "setosa", 1: "versicolor", 2: "virginica"}
 ```
-
-
-
-
-    'iris.csv'
-
-
 
 ## Hyperparameters
 
 
 ```python
 LR = 0.01
-LR
-```
-
-
-
-
-    0.01
-
-
-
-
-```python
 EPOCHS = 1000
-EPOCHS
-```
-
-
-
-
-    1000
-
-
-
-
-```python
 LOG_INTERVAL = 10
-LOG_INTERVAL
-```
-
-
-
-
-    10
-
-
-
-
-```python
-BATCH_SIZE = 32  # Adjust based on dataset size (32-2048 typical)
-BATCH_SIZE
-```
-
-
-
-
-    32
-
-
-
-
-```python
+BATCH_SIZE = 32
 CHUNK_SIZE = None  # Set to int (e.g., 100000) for large files, None for small files
-CHUNK_SIZE
-```
-
-
-```python
 DROPOUT = 0.0  # Dropout rate (0.0 = no dropout, 0.2-0.5 typical for regularization)
-DROPOUT
+VAL_SIZE = 0.15  # Fraction of training data reserved for validation
+PATIENCE = 50  # Early stopping patience (epochs without improvement)
 ```
-
-
-
-
-    0.0
-
-
 
 ## Load Dataset
 
@@ -581,7 +471,7 @@ df_clean
 #     inplace=True)
 ```
 
-## Feature Engineer Dataset
+## Feature Engineering
 
 ### Classify `petal_shape` If `petal_length` > 3x `petal_width`
 
@@ -791,6 +681,577 @@ df_eda
 
 
 
+## SQL Exploration
+
+
+```python
+# Create in-memory SQLite database from cleaned Iris dataset
+conn = sqlite3.connect(":memory:")
+df_eda.to_sql("iris", conn, index=False, if_exists="replace")
+```
+
+
+
+
+    150
+
+
+
+### Helper Function for Query Execution
+
+
+```python
+def run_query(query, description, n_rows=20):
+    """
+    Execute a SQL query against the in-memory SQLite database and display results.
+
+    Parameters:
+        query (str): SQL query string to execute.
+        description (str): Human-readable description of what the query does.
+        n_rows (int): Maximum number of rows to display (default: 20).
+
+    Returns:
+        None
+    """
+    print(f"\n{'='*80}")
+    print(f"QUERY: {description}")
+    print(f"{'='*80}")
+    print(f"\nSQL:\n{query}\n")
+    result = pd.read_sql_query(query, conn)
+    print(f"Results ({len(result)} rows):")
+    display(result.head(n_rows))
+```
+
+### Species Distribution
+
+Understand the distribution of `species` across the Iris dataset.
+
+
+```python
+query = """
+SELECT
+    species,
+    COUNT(*) as count,
+    ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM iris), 2) as percentage
+FROM iris
+GROUP BY species
+ORDER BY count DESC;
+"""
+run_query(query, "Overall species distribution")
+```
+
+    
+    ================================================================================
+    QUERY: Overall species distribution
+    ================================================================================
+    
+    SQL:
+    
+    SELECT
+        species,
+        COUNT(*) as count,
+        ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM iris), 2) as percentage
+    FROM iris
+    GROUP BY species
+    ORDER BY count DESC;
+    
+    
+    Results (3 rows):
+
+
+
+<div>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>species</th>
+      <th>count</th>
+      <th>percentage</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>virginica</td>
+      <td>50</td>
+      <td>33.33</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>versicolor</td>
+      <td>50</td>
+      <td>33.33</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>setosa</td>
+      <td>50</td>
+      <td>33.33</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+### Feature Statistics by Species
+
+What are the average measurements for each `species`?
+
+
+```python
+query = """
+SELECT
+    species,
+    ROUND(AVG(sepal_length), 2) as avg_sepal_length,
+    ROUND(AVG(sepal_width), 2) as avg_sepal_width,
+    ROUND(AVG(petal_length), 2) as avg_petal_length,
+    ROUND(AVG(petal_width), 2) as avg_petal_width,
+    COUNT(*) as sample_count
+FROM iris
+GROUP BY species
+ORDER BY species;
+"""
+run_query(query, "Average feature measurements by species")
+```
+
+    
+    ================================================================================
+    QUERY: Average feature measurements by species
+    ================================================================================
+    
+    SQL:
+    
+    SELECT
+        species,
+        ROUND(AVG(sepal_length), 2) as avg_sepal_length,
+        ROUND(AVG(sepal_width), 2) as avg_sepal_width,
+        ROUND(AVG(petal_length), 2) as avg_petal_length,
+        ROUND(AVG(petal_width), 2) as avg_petal_width,
+        COUNT(*) as sample_count
+    FROM iris
+    GROUP BY species
+    ORDER BY species;
+    
+    
+    Results (3 rows):
+
+
+
+<div>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>species</th>
+      <th>avg_sepal_length</th>
+      <th>avg_sepal_width</th>
+      <th>avg_petal_length</th>
+      <th>avg_petal_width</th>
+      <th>sample_count</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>setosa</td>
+      <td>5.01</td>
+      <td>3.42</td>
+      <td>1.46</td>
+      <td>0.24</td>
+      <td>50</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>versicolor</td>
+      <td>5.94</td>
+      <td>2.77</td>
+      <td>4.26</td>
+      <td>1.33</td>
+      <td>50</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>virginica</td>
+      <td>6.59</td>
+      <td>2.97</td>
+      <td>5.55</td>
+      <td>2.03</td>
+      <td>50</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+### Petal Shape Distribution by Species
+
+How does the engineered `petal_shape` feature distribute across `species`?
+
+
+```python
+query = """
+SELECT
+    species,
+    petal_shape,
+    COUNT(*) as count,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (PARTITION BY species), 2) as pct_within_species
+FROM iris
+GROUP BY species, petal_shape
+ORDER BY species, petal_shape;
+"""
+run_query(query, "Petal shape distribution by species")
+```
+
+    
+    ================================================================================
+    QUERY: Petal shape distribution by species
+    ================================================================================
+    
+    SQL:
+    
+    SELECT
+        species,
+        petal_shape,
+        COUNT(*) as count,
+        ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (PARTITION BY species), 2) as pct_within_species
+    FROM iris
+    GROUP BY species, petal_shape
+    ORDER BY species, petal_shape;
+    
+    
+    Results (6 rows):
+
+
+
+<div>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>species</th>
+      <th>petal_shape</th>
+      <th>count</th>
+      <th>pct_within_species</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>setosa</td>
+      <td>elongated</td>
+      <td>49</td>
+      <td>98.0</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>setosa</td>
+      <td>round</td>
+      <td>1</td>
+      <td>2.0</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>versicolor</td>
+      <td>elongated</td>
+      <td>37</td>
+      <td>74.0</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>versicolor</td>
+      <td>round</td>
+      <td>13</td>
+      <td>26.0</td>
+    </tr>
+    <tr>
+      <th>4</th>
+      <td>virginica</td>
+      <td>elongated</td>
+      <td>16</td>
+      <td>32.0</td>
+    </tr>
+    <tr>
+      <th>5</th>
+      <td>virginica</td>
+      <td>round</td>
+      <td>34</td>
+      <td>68.0</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+### Sepal Dominance Distribution by Species
+
+How does the engineered `sepal_dominance` feature distribute across `species`?
+
+
+```python
+query = """
+SELECT
+    species,
+    sepal_dominance,
+    COUNT(*) as count,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (PARTITION BY species), 2) as pct_within_species
+FROM iris
+GROUP BY species, sepal_dominance
+ORDER BY species, sepal_dominance;
+"""
+run_query(query, "Sepal dominance distribution by species")
+```
+
+    
+    ================================================================================
+    QUERY: Sepal dominance distribution by species
+    ================================================================================
+    
+    SQL:
+    
+    SELECT
+        species,
+        sepal_dominance,
+        COUNT(*) as count,
+        ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (PARTITION BY species), 2) as pct_within_species
+    FROM iris
+    GROUP BY species, sepal_dominance
+    ORDER BY species, sepal_dominance;
+    
+    
+    Results (3 rows):
+
+
+
+<div>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>species</th>
+      <th>sepal_dominance</th>
+      <th>count</th>
+      <th>pct_within_species</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>setosa</td>
+      <td>sepal_dominant</td>
+      <td>50</td>
+      <td>100.0</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>versicolor</td>
+      <td>balanced</td>
+      <td>50</td>
+      <td>100.0</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>virginica</td>
+      <td>balanced</td>
+      <td>50</td>
+      <td>100.0</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+### Feature Ranges by Species
+
+What are the min/max feature values for each `species`?
+
+
+```python
+query = """
+SELECT
+    species,
+    MIN(petal_length) as min_petal_length,
+    MAX(petal_length) as max_petal_length,
+    MIN(petal_width) as min_petal_width,
+    MAX(petal_width) as max_petal_width,
+    MIN(sepal_length) as min_sepal_length,
+    MAX(sepal_length) as max_sepal_length
+FROM iris
+GROUP BY species
+ORDER BY species;
+"""
+run_query(query, "Feature ranges by species")
+```
+
+    
+    ================================================================================
+    QUERY: Feature ranges by species
+    ================================================================================
+    
+    SQL:
+    
+    SELECT
+        species,
+        MIN(petal_length) as min_petal_length,
+        MAX(petal_length) as max_petal_length,
+        MIN(petal_width) as min_petal_width,
+        MAX(petal_width) as max_petal_width,
+        MIN(sepal_length) as min_sepal_length,
+        MAX(sepal_length) as max_sepal_length
+    FROM iris
+    GROUP BY species
+    ORDER BY species;
+    
+    
+    Results (3 rows):
+
+
+
+<div>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>species</th>
+      <th>min_petal_length</th>
+      <th>max_petal_length</th>
+      <th>min_petal_width</th>
+      <th>max_petal_width</th>
+      <th>min_sepal_length</th>
+      <th>max_sepal_length</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>setosa</td>
+      <td>1.0</td>
+      <td>1.9</td>
+      <td>0.1</td>
+      <td>0.6</td>
+      <td>4.3</td>
+      <td>5.8</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>versicolor</td>
+      <td>3.0</td>
+      <td>5.1</td>
+      <td>1.0</td>
+      <td>1.8</td>
+      <td>4.9</td>
+      <td>7.0</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>virginica</td>
+      <td>4.5</td>
+      <td>6.9</td>
+      <td>1.4</td>
+      <td>2.5</td>
+      <td>4.9</td>
+      <td>7.9</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+### Species Identification Patterns
+
+Which features best identify each `species`?
+
+
+```python
+query = """
+SELECT
+    species,
+    COUNT(*) as total,
+    SUM(CASE WHEN petal_length < 2.5 THEN 1 ELSE 0 END) as short_petal,
+    ROUND(SUM(CASE WHEN petal_length < 2.5 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) as short_petal_pct,
+    SUM(CASE WHEN sepal_dominance = 'sepal_dominant' THEN 1 ELSE 0 END) as sepal_dominant_count,
+    ROUND(SUM(CASE WHEN sepal_dominance = 'sepal_dominant' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) as sepal_dominant_pct
+FROM iris
+GROUP BY species
+ORDER BY species;
+"""
+run_query(query, "Species identification patterns")
+```
+
+    
+    ================================================================================
+    QUERY: Species identification patterns
+    ================================================================================
+    
+    SQL:
+    
+    SELECT
+        species,
+        COUNT(*) as total,
+        SUM(CASE WHEN petal_length < 2.5 THEN 1 ELSE 0 END) as short_petal,
+        ROUND(SUM(CASE WHEN petal_length < 2.5 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) as short_petal_pct,
+        SUM(CASE WHEN sepal_dominance = 'sepal_dominant' THEN 1 ELSE 0 END) as sepal_dominant_count,
+        ROUND(SUM(CASE WHEN sepal_dominance = 'sepal_dominant' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) as sepal_dominant_pct
+    FROM iris
+    GROUP BY species
+    ORDER BY species;
+    
+    
+    Results (3 rows):
+
+
+
+<div>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>species</th>
+      <th>total</th>
+      <th>short_petal</th>
+      <th>short_petal_pct</th>
+      <th>sepal_dominant_count</th>
+      <th>sepal_dominant_pct</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>setosa</td>
+      <td>50</td>
+      <td>50</td>
+      <td>100.0</td>
+      <td>50</td>
+      <td>100.0</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>versicolor</td>
+      <td>50</td>
+      <td>0</td>
+      <td>0.0</td>
+      <td>0</td>
+      <td>0.0</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>virginica</td>
+      <td>50</td>
+      <td>0</td>
+      <td>0.0</td>
+      <td>0</td>
+      <td>0.0</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+
+```python
+conn.close()
+```
+
 ## Exploratory Data Analysis
 
 
@@ -816,14 +1277,14 @@ df_eda.dtypes
 
 
 ```python
-CATEGORICAL_FEATURES = ["species", "petal_shape", "sepal_dominance"]
+CATEGORICAL_FEATURES = ["petal_shape", "sepal_dominance"]
 CATEGORICAL_FEATURES
 ```
 
 
 
 
-    ['species', 'petal_shape', 'sepal_dominance']
+    ['petal_shape', 'sepal_dominance']
 
 
 
@@ -837,21 +1298,6 @@ CONTINUOUS_FEATURES
 
 
     ['sepal_length', 'sepal_width', 'petal_length', 'petal_width']
-
-
-
-### Create `TARGET_VAR`
-
-
-```python
-TARGET_VAR = "species"
-TARGET_VAR
-```
-
-
-
-
-    'species'
 
 
 
@@ -884,7 +1330,7 @@ print((TARGET_VARS_list / TARGET_VARS_list.sum() * 100).round(1).astype(str) + "
 balance_ratio = TARGET_VARS_list.min() / TARGET_VARS_list.max()
 print(f"\nBalance Ratio: {balance_ratio:.2f}")
 if balance_ratio >= 0.8:
-    print("Assessment: Well-Balanced ✅")
+    print("Assessment: Well-Balanced \u2705")
 elif balance_ratio >= 0.5:
     print("Assessment: Moderately Imbalanced (consider stratified sampling)")
 else:
@@ -911,7 +1357,7 @@ else:
 
 ### Visualize the Marginal Distributions
 
-#### Count Plots – Marginal Distributions of Each Categorical Variable, w/ Facets for Each Categorical Variable
+#### Count Plots — Marginal Distributions of Each Categorical Variable, w/ Facets for Each Categorical Variable
 
 
 ```python
@@ -937,7 +1383,7 @@ plt.show()
 
 
     
-![png](README_files/I-MLP_57_0.png)
+![png](README_files/I-MLP_63_0.png)
     
 
 
@@ -969,23 +1415,11 @@ for x_var, col_var in pairs:
 
 
     
-![png](README_files/I-MLP_59_0.png)
+![png](README_files/I-MLP_65_0.png)
     
 
 
-
-    
-![png](README_files/I-MLP_59_1.png)
-    
-
-
-
-    
-![png](README_files/I-MLP_59_2.png)
-    
-
-
-### Histogram Plots – Marginal Distributions of Each Numerical Variable, w/ Facets for Each Numerical Variable
+### Histogram Plots — Marginal Distributions of Each Numerical Variable, w/ Facets for Each Numerical Variable
 
 
 ```python
@@ -1006,7 +1440,6 @@ df_eda_lf
     <tr style="text-align: right;">
       <th></th>
       <th>rowid</th>
-      <th>species</th>
       <th>petal_shape</th>
       <th>sepal_dominance</th>
       <th>variable</th>
@@ -1017,7 +1450,6 @@ df_eda_lf
     <tr>
       <th>0</th>
       <td>0</td>
-      <td>setosa</td>
       <td>elongated</td>
       <td>sepal_dominant</td>
       <td>sepal_length</td>
@@ -1026,7 +1458,6 @@ df_eda_lf
     <tr>
       <th>1</th>
       <td>1</td>
-      <td>setosa</td>
       <td>elongated</td>
       <td>sepal_dominant</td>
       <td>sepal_length</td>
@@ -1035,7 +1466,6 @@ df_eda_lf
     <tr>
       <th>2</th>
       <td>2</td>
-      <td>setosa</td>
       <td>elongated</td>
       <td>sepal_dominant</td>
       <td>sepal_length</td>
@@ -1044,7 +1474,6 @@ df_eda_lf
     <tr>
       <th>3</th>
       <td>3</td>
-      <td>setosa</td>
       <td>elongated</td>
       <td>sepal_dominant</td>
       <td>sepal_length</td>
@@ -1053,7 +1482,6 @@ df_eda_lf
     <tr>
       <th>4</th>
       <td>4</td>
-      <td>setosa</td>
       <td>elongated</td>
       <td>sepal_dominant</td>
       <td>sepal_length</td>
@@ -1066,12 +1494,10 @@ df_eda_lf
       <td>...</td>
       <td>...</td>
       <td>...</td>
-      <td>...</td>
     </tr>
     <tr>
       <th>595</th>
       <td>145</td>
-      <td>virginica</td>
       <td>round</td>
       <td>balanced</td>
       <td>petal_width</td>
@@ -1080,7 +1506,6 @@ df_eda_lf
     <tr>
       <th>596</th>
       <td>146</td>
-      <td>virginica</td>
       <td>round</td>
       <td>balanced</td>
       <td>petal_width</td>
@@ -1089,7 +1514,6 @@ df_eda_lf
     <tr>
       <th>597</th>
       <td>147</td>
-      <td>virginica</td>
       <td>round</td>
       <td>balanced</td>
       <td>petal_width</td>
@@ -1098,7 +1522,6 @@ df_eda_lf
     <tr>
       <th>598</th>
       <td>148</td>
-      <td>virginica</td>
       <td>round</td>
       <td>balanced</td>
       <td>petal_width</td>
@@ -1107,7 +1530,6 @@ df_eda_lf
     <tr>
       <th>599</th>
       <td>149</td>
-      <td>virginica</td>
       <td>round</td>
       <td>balanced</td>
       <td>petal_width</td>
@@ -1115,7 +1537,7 @@ df_eda_lf
     </tr>
   </tbody>
 </table>
-<p>600 rows × 6 columns</p>
+<p>600 rows × 5 columns</p>
 </div>
 
 
@@ -1136,7 +1558,7 @@ plt.show()
 
 
     
-![png](README_files/I-MLP_62_0.png)
+![png](README_files/I-MLP_68_0.png)
     
 
 
@@ -1167,77 +1589,53 @@ for num_var in CONTINUOUS_FEATURES:
 
 
     
-![png](README_files/I-MLP_64_0.png)
+![png](README_files/I-MLP_70_0.png)
     
 
 
 
     
-![png](README_files/I-MLP_64_1.png)
+![png](README_files/I-MLP_70_1.png)
     
 
 
 
     
-![png](README_files/I-MLP_64_2.png)
+![png](README_files/I-MLP_70_2.png)
     
 
 
 
     
-![png](README_files/I-MLP_64_3.png)
+![png](README_files/I-MLP_70_3.png)
     
 
 
 
     
-![png](README_files/I-MLP_64_4.png)
+![png](README_files/I-MLP_70_4.png)
     
 
 
 
     
-![png](README_files/I-MLP_64_5.png)
+![png](README_files/I-MLP_70_5.png)
     
 
 
 
     
-![png](README_files/I-MLP_64_6.png)
+![png](README_files/I-MLP_70_6.png)
     
 
 
 
     
-![png](README_files/I-MLP_64_7.png)
+![png](README_files/I-MLP_70_7.png)
     
 
 
-
-    
-![png](README_files/I-MLP_64_8.png)
-    
-
-
-
-    
-![png](README_files/I-MLP_64_9.png)
-    
-
-
-
-    
-![png](README_files/I-MLP_64_10.png)
-    
-
-
-
-    
-![png](README_files/I-MLP_64_11.png)
-    
-
-
-### Box Plots – Distribution of Each Numerical Variable by Categorical Variable, Faceted by the Respective Numerical Variable
+### Box Plots — Distribution of Each Numerical Variable by Categorical Variable, Faceted by the Respective Numerical Variable
 
 
 ```python
@@ -1264,77 +1662,53 @@ for num_var in CONTINUOUS_FEATURES:
 
 
     
-![png](README_files/I-MLP_66_0.png)
+![png](README_files/I-MLP_72_0.png)
     
 
 
 
     
-![png](README_files/I-MLP_66_1.png)
+![png](README_files/I-MLP_72_1.png)
     
 
 
 
     
-![png](README_files/I-MLP_66_2.png)
+![png](README_files/I-MLP_72_2.png)
     
 
 
 
     
-![png](README_files/I-MLP_66_3.png)
+![png](README_files/I-MLP_72_3.png)
     
 
 
 
     
-![png](README_files/I-MLP_66_4.png)
+![png](README_files/I-MLP_72_4.png)
     
 
 
 
     
-![png](README_files/I-MLP_66_5.png)
+![png](README_files/I-MLP_72_5.png)
     
 
 
 
     
-![png](README_files/I-MLP_66_6.png)
+![png](README_files/I-MLP_72_6.png)
     
 
 
 
     
-![png](README_files/I-MLP_66_7.png)
+![png](README_files/I-MLP_72_7.png)
     
 
 
-
-    
-![png](README_files/I-MLP_66_8.png)
-    
-
-
-
-    
-![png](README_files/I-MLP_66_9.png)
-    
-
-
-
-    
-![png](README_files/I-MLP_66_10.png)
-    
-
-
-
-    
-![png](README_files/I-MLP_66_11.png)
-    
-
-
-### Point Plots – Mean and Confidence Interval of Each Numerical Variable by Categorical Variable, Faceted by the Respective Numerical Variable
+### Point Plots — Mean and Confidence Interval of Each Numerical Variable by Categorical Variable, Faceted by the Respective Numerical Variable
 
 
 ```python
@@ -1362,73 +1736,49 @@ for num_var in CONTINUOUS_FEATURES:
 
 
     
-![png](README_files/I-MLP_68_0.png)
+![png](README_files/I-MLP_74_0.png)
     
 
 
 
     
-![png](README_files/I-MLP_68_1.png)
+![png](README_files/I-MLP_74_1.png)
     
 
 
 
     
-![png](README_files/I-MLP_68_2.png)
+![png](README_files/I-MLP_74_2.png)
     
 
 
 
     
-![png](README_files/I-MLP_68_3.png)
+![png](README_files/I-MLP_74_3.png)
     
 
 
 
     
-![png](README_files/I-MLP_68_4.png)
+![png](README_files/I-MLP_74_4.png)
     
 
 
 
     
-![png](README_files/I-MLP_68_5.png)
+![png](README_files/I-MLP_74_5.png)
     
 
 
 
     
-![png](README_files/I-MLP_68_6.png)
+![png](README_files/I-MLP_74_6.png)
     
 
 
 
     
-![png](README_files/I-MLP_68_7.png)
-    
-
-
-
-    
-![png](README_files/I-MLP_68_8.png)
-    
-
-
-
-    
-![png](README_files/I-MLP_68_9.png)
-    
-
-
-
-    
-![png](README_files/I-MLP_68_10.png)
-    
-
-
-
-    
-![png](README_files/I-MLP_68_11.png)
+![png](README_files/I-MLP_74_7.png)
     
 
 
@@ -1454,29 +1804,6 @@ df_eda.dtypes
 
 
 #### Encode `species` as Integer Labels (Classification)
-
-
-```python
-df_eda["species"]
-```
-
-
-
-
-    0         setosa
-    1         setosa
-    2         setosa
-    3         setosa
-    4         setosa
-             ...    
-    145    virginica
-    146    virginica
-    147    virginica
-    148    virginica
-    149    virginica
-    Name: species, Length: 150, dtype: object
-
-
 
 
 ```python
@@ -1528,29 +1855,6 @@ df_eda["species"]
 
 
 ```python
-df_eda["petal_shape"]
-```
-
-
-
-
-    0      elongated
-    1      elongated
-    2      elongated
-    3      elongated
-    4      elongated
-             ...    
-    145        round
-    146        round
-    147        round
-    148        round
-    149        round
-    Name: petal_shape, Length: 150, dtype: object
-
-
-
-
-```python
 df_eda["petal_shape"].value_counts()
 ```
 
@@ -1591,29 +1895,6 @@ df_eda["petal_shape"]
 
 
 #### Encode `sepal_dominance` as Binary Float
-
-
-```python
-df_eda["sepal_dominance"]
-```
-
-
-
-
-    0      sepal_dominant
-    1      sepal_dominant
-    2      sepal_dominant
-    3      sepal_dominant
-    4      sepal_dominant
-                ...      
-    145          balanced
-    146          balanced
-    147          balanced
-    148          balanced
-    149          balanced
-    Name: sepal_dominance, Length: 150, dtype: object
-
-
 
 
 ```python
@@ -1677,7 +1958,7 @@ df_eda.dtypes
 
 
 
-### Correlation Plots – Correlation Matrix of All Numerical Variables
+### Correlation Plots — Correlation Matrix of All Numerical Variables
 
 
 ```python
@@ -1700,11 +1981,11 @@ plt.show()
 
 
     
-![png](README_files/I-MLP_86_0.png)
+![png](README_files/I-MLP_89_0.png)
     
 
 
-### Correlation Plots – Feature Correlation w/ Target Variable (`species`)
+### Correlation Plots — Feature Correlation w/ Target Variable
 
 
 ```python
@@ -1724,15 +2005,15 @@ plt.show()
 
 
     
-![png](README_files/I-MLP_88_0.png)
+![png](README_files/I-MLP_91_0.png)
     
 
 
-### Create `Features` Variable for Audit & Modeling 
+### Create `features` Variable for Audit & Modeling
 
 
 ```python
-features = [col for col in df_eda.columns if col not in [TARGET_VAR]]
+features = [col for col in df_eda.columns if col != TARGET_VAR]
 features
 ```
 
@@ -1748,41 +2029,831 @@ features
 
 
 
-### Feature Selection Audit: Signal Strength & Cardinality
+### Train/Test Split (Pre-Analysis)
+
+Split **before** discriminative score analysis and feature audit to prevent data leakage. Test data must never influence feature selection decisions.
 
 
 ```python
-features = [col for col in df_eda.columns if col != TARGET_VAR]
+# Stratified split BEFORE analysis to prevent data leakage
+df_train, df_test = train_test_split(
+    df_eda, test_size=TEST_SIZE, random_state=SEED, stratify=df_eda[TARGET_VAR]
+)
+print(f"Train: {len(df_train)}, Test: {len(df_test)}")
+```
+
+    Train: 105, Test: 45
+
+
+## Discriminative Score Analysis
+
+The **discriminative score** rates how useful a single feature is for separating two groups (label 0 vs label 1). It combines three normalized signals:
+
+$$S = 0.4\,P + 0.4\,E + 0.2\,M$$
+
+| Symbol | Name | Range | What it captures |
+|---|---|---|---|
+| $P$ | p-value strength | $[0, 1]$ | $\min\!\bigl(1,\;{-\log_{10}(p)}/{10}\bigr)$ — is the difference real? |
+| $E$ | effect size | $[0, 1]$ | Cohen's $d$ (continuous) or Cramér's $V$ (categorical), capped at 1 |
+| $M$ | mutual information | $[0, 1]$ | Normalized MI between feature and label |
+
+### How to Interpret Each Value (Good vs Bad)
+
+#### P — p-value strength
+| P value | Raw p-value | Interpretation |
+|---|---|---|
+| < 0.05 | p > 0.3 | **Bad.** The difference could easily be random noise. |
+| 0.05 - 0.20 | p ~ 0.01 - 0.1 | **Weak.** Some evidence, but not convincing. |
+| 0.20 - 0.50 | p ~ 1e-2 to 1e-5 | **Good.** Strong statistical evidence the groups differ. |
+| > 0.50 | p < 1e-5 | **Excellent.** Very strong evidence. |
+
+#### E — effect size (Cohen's d or Cramer's V)
+| E value | Interpretation |
+|---|---|
+| < 0.20 | **Negligible.** Groups overlap almost completely. |
+| 0.20 - 0.50 | **Small.** Noticeable difference but lots of overlap. |
+| 0.50 - 0.80 | **Medium.** Clear practical difference. |
+| > 0.80 | **Large.** Groups are well separated. |
+
+#### M — normalized mutual information
+| M value | Interpretation |
+|---|---|
+| < 0.05 | **Bad.** Feature tells you almost nothing about the label. |
+| 0.05 - 0.20 | **Weak.** Slight information gain. |
+| 0.20 - 0.50 | **Good.** Feature meaningfully reduces uncertainty about the label. |
+| > 0.50 | **Excellent.** Feature strongly predicts the label. |
+
+#### S — final discriminative score
+| S value | Interpretation |
+|---|---|
+| < 0.20 | **Drop it.** The feature is not useful for classification. |
+| 0.20 - 0.40 | **Weak.** Might help slightly but do not rely on it alone. |
+| 0.40 - 0.60 | **Moderate.** A decent feature worth including. |
+| 0.60 - 0.80 | **Strong.** Reliable discriminator — prioritize this feature. |
+| > 0.80 | **Excellent.** Top-tier feature with high significance, large effect, and high MI. |
+
+### Continuous Features — Two-Sample t-Test
+
+#### Sample Means
+
+$$\bar{x} = \frac{1}{n}\sum_{i=1}^{n} x_i$$
+
+#### Sample Variances (Bessel-corrected, ddof=1)
+
+$$s^2 = \frac{1}{n-1}\sum_{i=1}^{n}(x_i - \bar{x})^2$$
+
+#### Pooled Variance & t-Statistic
+
+**Degrees of freedom:**
+
+$$df = n_0 + n_1 - 2$$
+
+**Pooled variance:**
+
+$$s_p^2 = \frac{(n_0-1)\,s_0^2 + (n_1-1)\,s_1^2}{df}$$
+
+**t-statistic:**
+
+$$t = \frac{\bar{x}_1 - \bar{x}_0}{s_p\,\sqrt{\dfrac{1}{n_0} + \dfrac{1}{n_1}}}$$
+
+#### Cohen's d → Component $E$
+
+$$d = \frac{\bar{x}_1 - \bar{x}_0}{s_p}$$
+
+$$E = \min(1,\;|d|)$$
+
+### Categorical Features — Chi-Square Test
+
+#### Contingency Table & Chi-Square Statistic
+
+**Expected count:**
+
+$$E_{ij} = \frac{(\text{row total}_i)(\text{col total}_j)}{n}$$
+
+**Degrees of freedom:**
+
+$$df = (r-1)(c-1)$$
+
+**Chi-square statistic:**
+
+$$\chi^2 = \sum_{i,j}\frac{(O_{ij} - E_{ij})^2}{E_{ij}}$$
+
+#### Cramér's V → Component $E$
+
+$$V = \sqrt{\frac{\chi^2}{n\,(\min(r,c) - 1)}}$$
+
+$$E = \min(1,\;V)$$
+
+### NMI → Component $M$
+
+**Mutual Information:**
+
+$$I(X;Y) = \sum_{x,y} p(x,y)\,\ln\!\frac{p(x,y)}{p(x)\,p(y)}$$
+
+**Entropy:**
+
+$$H(X) = -\sum_x p(x)\,\ln p(x)$$
+
+**Normalized Mutual Information:**
+
+$$\text{NMI} = \frac{I}{\sqrt{H(X) \cdot H(Y)}}$$
+
+$$M = \text{NMI}$$
+
+#### P Component & Final Score
+
+$$P = \min\!\left(1,\;\frac{-\log_{10}(p)}{10}\right)$$
+
+$$S = 0.4\,P + 0.4\,E + 0.2\,M$$
+
+### Reusable Function: `compute_discriminative_score()`
+
+Private helpers (prefixed `_`) are defined above the main function, in the exact order they are called.
+
+
+```python
+def _infer_feature_type(values):
+    """
+    Infer whether a pandas Series is continuous or categorical.
+
+    Parameters:
+        values (pd.Series): Feature column to evaluate.
+
+    Returns:
+        str: 'continuous' if numeric dtype, otherwise 'categorical'.
+    """
+    return "continuous" if pd.api.types.is_numeric_dtype(values) else "categorical"
+
+
+def _continuous_stats(g0, g1, labels, values):
+    """
+    Compute p-value, effect size (Cohen's d), and NMI for a continuous feature.
+
+    Parameters:
+        g0 (np.ndarray): Feature values for label-0 samples.
+        g1 (np.ndarray): Feature values for label-1 samples.
+        labels (pd.Series): Full label column.
+        values (pd.Series): Full feature column (used for median-split binning).
+
+    Returns:
+        tuple: (p_value, cohens_d, nmi).
+    """
+    n0, n1 = len(g0), len(g1)
+    sp2 = ((n0 - 1) * g0.var(ddof=1) + (n1 - 1) * g1.var(ddof=1)) / (n0 + n1 - 2)
+    sp = np.sqrt(sp2)
+    _, p = stats.ttest_ind(g0, g1, equal_var=True)
+    d = abs(g1.mean() - g0.mean()) / sp if sp > 0 else 0.0
+    binned = (values > values.median()).astype(int)
+    nmi = normalized_mutual_info_score(labels, binned)
+    return p, d, nmi
+
+
+def _categorical_stats(labels, values, n):
+    """
+    Compute p-value, effect size (Cramer's V), and NMI for a categorical feature.
+
+    Parameters:
+        labels (pd.Series): Binary label column.
+        values (pd.Series): Categorical feature column.
+        n (int): Total number of samples.
+
+    Returns:
+        tuple: (p_value, cramers_v, nmi).
+    """
+    ct = pd.crosstab(labels, values)
+    chi2, p, _, _ = stats.chi2_contingency(ct, correction=False)
+    k = min(ct.shape)
+    v = np.sqrt(chi2 / (n * max(k - 1, 1)))
+    nmi = normalized_mutual_info_score(labels, values)
+    return p, v, nmi
+
+
+def _compute_raw_stats(feature_type, labels, values, n):
+    """
+    Dispatch to the correct statistical test based on feature type.
+
+    Parameters:
+        feature_type (str): 'continuous' or 'categorical'.
+        labels (pd.Series): Binary label column.
+        values (pd.Series): Feature column.
+        n (int): Total number of samples.
+
+    Returns:
+        tuple: (p_value, effect_size, nmi).
+    """
+    if feature_type == "continuous":
+        g0 = values[labels == 0].dropna().values
+        g1 = values[labels == 1].dropna().values
+        return _continuous_stats(g0, g1, labels, values)
+    return _categorical_stats(labels, values, n)
+
+
+def _score_components(p_value, effect_size, nmi):
+    """
+    Normalize raw statistics into the P, E, M components and compute S.
+
+    Parameters:
+        p_value (float): Raw p-value from the statistical test.
+        effect_size (float): Raw effect size (Cohen's d or Cramer's V).
+        nmi (float): Normalized mutual information.
+
+    Returns:
+        dict: Keys: p_value, effect_size, nmi, P, E, M, S.
+    """
+    P = min(1.0, -np.log10(max(p_value, 1e-300)) / 10)
+    E = min(1.0, effect_size)
+    M = nmi
+    S = 0.4 * P + 0.4 * E + 0.2 * M
+    return {
+        "p_value": p_value,
+        "effect_size": effect_size,
+        "nmi": nmi,
+        "P": P,
+        "E": E,
+        "M": M,
+        "S": S,
+    }
+
+
+def compute_discriminative_score(df, feature_col, label_col, feature_type="auto"):
+    """
+    Compute the discriminative score for a single feature.
+
+    Parameters:
+        df (pd.DataFrame): Input dataframe containing feature and label columns.
+        feature_col (str): Name of the feature column to evaluate.
+        label_col (str): Name of the binary label column (0 or 1).
+        feature_type (str): 'continuous', 'categorical', or 'auto' (default: 'auto').
+
+    Returns:
+        dict: Keys: p_value, effect_size, nmi, P, E, M, S.
+    """
+    labels, values = df[label_col], df[feature_col]
+    if feature_type == "auto":
+        feature_type = _infer_feature_type(values)
+    p, effect, nmi = _compute_raw_stats(feature_type, labels, values, len(df))
+    return _score_components(p, effect, nmi)
+```
+
+### Apply Discriminative Score to Iris Features (One-vs-Rest)
+
+Since Iris has 3 classes, we compute discriminative scores using a **one-vs-rest** (OVR) approach: for each species, we create a binary label (1 = target species, 0 = all others) and evaluate every feature.
+
+
+```python
+# Define feature types for discriminative score computation
+feature_types = {col: "continuous" for col in CONTINUOUS_FEATURES}
+for cat in CATEGORICAL_FEATURES:
+    feature_types[cat] = "categorical"
+
+# Compute discriminative scores for each feature vs each class (OVR)
+disc_results = []
+for class_idx, class_name in SPECIES_MAP.items():
+    df_disc = df_train.copy()
+    df_disc["binary_label"] = (df_disc[TARGET_VAR] == class_idx).astype(int)
+    for feat in features:
+        score = compute_discriminative_score(
+            df_disc, feat, "binary_label", feature_type=feature_types[feat]
+        )
+        disc_results.append({"Feature": feat, "Class": class_name, **score})
+disc_df = pd.DataFrame(disc_results)
+disc_df
+```
+
+
+
+
+<div>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>Feature</th>
+      <th>Class</th>
+      <th>p_value</th>
+      <th>effect_size</th>
+      <th>nmi</th>
+      <th>P</th>
+      <th>E</th>
+      <th>M</th>
+      <th>S</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>sepal_length</td>
+      <td>setosa</td>
+      <td>1.288405e-18</td>
+      <td>2.234062</td>
+      <td>0.413999</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>0.413999</td>
+      <td>0.882800</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>sepal_width</td>
+      <td>setosa</td>
+      <td>3.478401e-10</td>
+      <td>1.437961</td>
+      <td>0.197960</td>
+      <td>0.945862</td>
+      <td>1.000000</td>
+      <td>0.197960</td>
+      <td>0.817937</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>petal_length</td>
+      <td>setosa</td>
+      <td>1.611085e-42</td>
+      <td>4.780438</td>
+      <td>0.455829</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>0.455829</td>
+      <td>0.891166</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>petal_width</td>
+      <td>setosa</td>
+      <td>1.472239e-35</td>
+      <td>3.946378</td>
+      <td>0.427411</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>0.427411</td>
+      <td>0.885482</td>
+    </tr>
+    <tr>
+      <th>4</th>
+      <td>petal_shape</td>
+      <td>setosa</td>
+      <td>2.736120e-06</td>
+      <td>0.457667</td>
+      <td>0.239752</td>
+      <td>0.556286</td>
+      <td>0.457667</td>
+      <td>0.239752</td>
+      <td>0.453532</td>
+    </tr>
+    <tr>
+      <th>5</th>
+      <td>sepal_dominance</td>
+      <td>setosa</td>
+      <td>1.221358e-24</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+    </tr>
+    <tr>
+      <th>6</th>
+      <td>sepal_length</td>
+      <td>versicolor</td>
+      <td>5.301533e-01</td>
+      <td>0.130402</td>
+      <td>0.004954</td>
+      <td>0.027560</td>
+      <td>0.130402</td>
+      <td>0.004954</td>
+      <td>0.064176</td>
+    </tr>
+    <tr>
+      <th>7</th>
+      <td>sepal_width</td>
+      <td>versicolor</td>
+      <td>5.931626e-08</td>
+      <td>1.210525</td>
+      <td>0.154467</td>
+      <td>0.722683</td>
+      <td>1.000000</td>
+      <td>0.154467</td>
+      <td>0.719966</td>
+    </tr>
+    <tr>
+      <th>8</th>
+      <td>petal_length</td>
+      <td>versicolor</td>
+      <td>6.628994e-02</td>
+      <td>0.384261</td>
+      <td>0.001230</td>
+      <td>0.117855</td>
+      <td>0.384261</td>
+      <td>0.001230</td>
+      <td>0.201092</td>
+    </tr>
+    <tr>
+      <th>9</th>
+      <td>petal_width</td>
+      <td>versicolor</td>
+      <td>3.365922e-01</td>
+      <td>0.199862</td>
+      <td>0.006762</td>
+      <td>0.047290</td>
+      <td>0.199862</td>
+      <td>0.006762</td>
+      <td>0.100213</td>
+    </tr>
+    <tr>
+      <th>10</th>
+      <td>petal_shape</td>
+      <td>versicolor</td>
+      <td>1.303292e-01</td>
+      <td>0.147635</td>
+      <td>0.018284</td>
+      <td>0.088496</td>
+      <td>0.147635</td>
+      <td>0.018284</td>
+      <td>0.098109</td>
+    </tr>
+    <tr>
+      <th>11</th>
+      <td>sepal_dominance</td>
+      <td>versicolor</td>
+      <td>2.999548e-07</td>
+      <td>0.500000</td>
+      <td>0.274018</td>
+      <td>0.652294</td>
+      <td>0.500000</td>
+      <td>0.274018</td>
+      <td>0.515721</td>
+    </tr>
+    <tr>
+      <th>12</th>
+      <td>sepal_length</td>
+      <td>virginica</td>
+      <td>8.454484e-15</td>
+      <td>1.878454</td>
+      <td>0.260535</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>0.260535</td>
+      <td>0.852107</td>
+    </tr>
+    <tr>
+      <th>13</th>
+      <td>sepal_width</td>
+      <td>virginica</td>
+      <td>5.063281e-01</td>
+      <td>0.138061</td>
+      <td>0.003479</td>
+      <td>0.029557</td>
+      <td>0.138061</td>
+      <td>0.003479</td>
+      <td>0.067743</td>
+    </tr>
+    <tr>
+      <th>14</th>
+      <td>petal_length</td>
+      <td>virginica</td>
+      <td>4.021343e-19</td>
+      <td>2.281304</td>
+      <td>0.503104</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>0.503104</td>
+      <td>0.900621</td>
+    </tr>
+    <tr>
+      <th>15</th>
+      <td>petal_width</td>
+      <td>virginica</td>
+      <td>1.989687e-23</td>
+      <td>2.689076</td>
+      <td>0.538363</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>0.538363</td>
+      <td>0.907673</td>
+    </tr>
+    <tr>
+      <th>16</th>
+      <td>petal_shape</td>
+      <td>virginica</td>
+      <td>5.557304e-10</td>
+      <td>0.605302</td>
+      <td>0.293669</td>
+      <td>0.925514</td>
+      <td>0.605302</td>
+      <td>0.293669</td>
+      <td>0.671060</td>
+    </tr>
+    <tr>
+      <th>17</th>
+      <td>sepal_dominance</td>
+      <td>virginica</td>
+      <td>2.999548e-07</td>
+      <td>0.500000</td>
+      <td>0.274018</td>
+      <td>0.652294</td>
+      <td>0.500000</td>
+      <td>0.274018</td>
+      <td>0.515721</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+
+
+### Discriminative Score Results — Detailed Breakdown
+
+
+```python
+# Format and display the styled results table
+disc_df[["Feature", "Class", "P", "E", "M", "S"]].style.format(
+    {"P": "{:.4f}", "E": "{:.4f}", "M": "{:.4f}", "S": "{:.4f}"}
+).set_caption("Discriminative Score Breakdown (One-vs-Rest)")
+```
+
+
+
+
+<style type="text/css">
+</style>
+<table id="T_057b9">
+  <caption>Discriminative Score Breakdown (One-vs-Rest)</caption>
+  <thead>
+    <tr>
+      <th class="blank level0" >&nbsp;</th>
+      <th id="T_057b9_level0_col0" class="col_heading level0 col0" >Feature</th>
+      <th id="T_057b9_level0_col1" class="col_heading level0 col1" >Class</th>
+      <th id="T_057b9_level0_col2" class="col_heading level0 col2" >P</th>
+      <th id="T_057b9_level0_col3" class="col_heading level0 col3" >E</th>
+      <th id="T_057b9_level0_col4" class="col_heading level0 col4" >M</th>
+      <th id="T_057b9_level0_col5" class="col_heading level0 col5" >S</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th id="T_057b9_level0_row0" class="row_heading level0 row0" >0</th>
+      <td id="T_057b9_row0_col0" class="data row0 col0" >sepal_length</td>
+      <td id="T_057b9_row0_col1" class="data row0 col1" >setosa</td>
+      <td id="T_057b9_row0_col2" class="data row0 col2" >1.0000</td>
+      <td id="T_057b9_row0_col3" class="data row0 col3" >1.0000</td>
+      <td id="T_057b9_row0_col4" class="data row0 col4" >0.4140</td>
+      <td id="T_057b9_row0_col5" class="data row0 col5" >0.8828</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row1" class="row_heading level0 row1" >1</th>
+      <td id="T_057b9_row1_col0" class="data row1 col0" >sepal_width</td>
+      <td id="T_057b9_row1_col1" class="data row1 col1" >setosa</td>
+      <td id="T_057b9_row1_col2" class="data row1 col2" >0.9459</td>
+      <td id="T_057b9_row1_col3" class="data row1 col3" >1.0000</td>
+      <td id="T_057b9_row1_col4" class="data row1 col4" >0.1980</td>
+      <td id="T_057b9_row1_col5" class="data row1 col5" >0.8179</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row2" class="row_heading level0 row2" >2</th>
+      <td id="T_057b9_row2_col0" class="data row2 col0" >petal_length</td>
+      <td id="T_057b9_row2_col1" class="data row2 col1" >setosa</td>
+      <td id="T_057b9_row2_col2" class="data row2 col2" >1.0000</td>
+      <td id="T_057b9_row2_col3" class="data row2 col3" >1.0000</td>
+      <td id="T_057b9_row2_col4" class="data row2 col4" >0.4558</td>
+      <td id="T_057b9_row2_col5" class="data row2 col5" >0.8912</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row3" class="row_heading level0 row3" >3</th>
+      <td id="T_057b9_row3_col0" class="data row3 col0" >petal_width</td>
+      <td id="T_057b9_row3_col1" class="data row3 col1" >setosa</td>
+      <td id="T_057b9_row3_col2" class="data row3 col2" >1.0000</td>
+      <td id="T_057b9_row3_col3" class="data row3 col3" >1.0000</td>
+      <td id="T_057b9_row3_col4" class="data row3 col4" >0.4274</td>
+      <td id="T_057b9_row3_col5" class="data row3 col5" >0.8855</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row4" class="row_heading level0 row4" >4</th>
+      <td id="T_057b9_row4_col0" class="data row4 col0" >petal_shape</td>
+      <td id="T_057b9_row4_col1" class="data row4 col1" >setosa</td>
+      <td id="T_057b9_row4_col2" class="data row4 col2" >0.5563</td>
+      <td id="T_057b9_row4_col3" class="data row4 col3" >0.4577</td>
+      <td id="T_057b9_row4_col4" class="data row4 col4" >0.2398</td>
+      <td id="T_057b9_row4_col5" class="data row4 col5" >0.4535</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row5" class="row_heading level0 row5" >5</th>
+      <td id="T_057b9_row5_col0" class="data row5 col0" >sepal_dominance</td>
+      <td id="T_057b9_row5_col1" class="data row5 col1" >setosa</td>
+      <td id="T_057b9_row5_col2" class="data row5 col2" >1.0000</td>
+      <td id="T_057b9_row5_col3" class="data row5 col3" >1.0000</td>
+      <td id="T_057b9_row5_col4" class="data row5 col4" >1.0000</td>
+      <td id="T_057b9_row5_col5" class="data row5 col5" >1.0000</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row6" class="row_heading level0 row6" >6</th>
+      <td id="T_057b9_row6_col0" class="data row6 col0" >sepal_length</td>
+      <td id="T_057b9_row6_col1" class="data row6 col1" >versicolor</td>
+      <td id="T_057b9_row6_col2" class="data row6 col2" >0.0276</td>
+      <td id="T_057b9_row6_col3" class="data row6 col3" >0.1304</td>
+      <td id="T_057b9_row6_col4" class="data row6 col4" >0.0050</td>
+      <td id="T_057b9_row6_col5" class="data row6 col5" >0.0642</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row7" class="row_heading level0 row7" >7</th>
+      <td id="T_057b9_row7_col0" class="data row7 col0" >sepal_width</td>
+      <td id="T_057b9_row7_col1" class="data row7 col1" >versicolor</td>
+      <td id="T_057b9_row7_col2" class="data row7 col2" >0.7227</td>
+      <td id="T_057b9_row7_col3" class="data row7 col3" >1.0000</td>
+      <td id="T_057b9_row7_col4" class="data row7 col4" >0.1545</td>
+      <td id="T_057b9_row7_col5" class="data row7 col5" >0.7200</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row8" class="row_heading level0 row8" >8</th>
+      <td id="T_057b9_row8_col0" class="data row8 col0" >petal_length</td>
+      <td id="T_057b9_row8_col1" class="data row8 col1" >versicolor</td>
+      <td id="T_057b9_row8_col2" class="data row8 col2" >0.1179</td>
+      <td id="T_057b9_row8_col3" class="data row8 col3" >0.3843</td>
+      <td id="T_057b9_row8_col4" class="data row8 col4" >0.0012</td>
+      <td id="T_057b9_row8_col5" class="data row8 col5" >0.2011</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row9" class="row_heading level0 row9" >9</th>
+      <td id="T_057b9_row9_col0" class="data row9 col0" >petal_width</td>
+      <td id="T_057b9_row9_col1" class="data row9 col1" >versicolor</td>
+      <td id="T_057b9_row9_col2" class="data row9 col2" >0.0473</td>
+      <td id="T_057b9_row9_col3" class="data row9 col3" >0.1999</td>
+      <td id="T_057b9_row9_col4" class="data row9 col4" >0.0068</td>
+      <td id="T_057b9_row9_col5" class="data row9 col5" >0.1002</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row10" class="row_heading level0 row10" >10</th>
+      <td id="T_057b9_row10_col0" class="data row10 col0" >petal_shape</td>
+      <td id="T_057b9_row10_col1" class="data row10 col1" >versicolor</td>
+      <td id="T_057b9_row10_col2" class="data row10 col2" >0.0885</td>
+      <td id="T_057b9_row10_col3" class="data row10 col3" >0.1476</td>
+      <td id="T_057b9_row10_col4" class="data row10 col4" >0.0183</td>
+      <td id="T_057b9_row10_col5" class="data row10 col5" >0.0981</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row11" class="row_heading level0 row11" >11</th>
+      <td id="T_057b9_row11_col0" class="data row11 col0" >sepal_dominance</td>
+      <td id="T_057b9_row11_col1" class="data row11 col1" >versicolor</td>
+      <td id="T_057b9_row11_col2" class="data row11 col2" >0.6523</td>
+      <td id="T_057b9_row11_col3" class="data row11 col3" >0.5000</td>
+      <td id="T_057b9_row11_col4" class="data row11 col4" >0.2740</td>
+      <td id="T_057b9_row11_col5" class="data row11 col5" >0.5157</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row12" class="row_heading level0 row12" >12</th>
+      <td id="T_057b9_row12_col0" class="data row12 col0" >sepal_length</td>
+      <td id="T_057b9_row12_col1" class="data row12 col1" >virginica</td>
+      <td id="T_057b9_row12_col2" class="data row12 col2" >1.0000</td>
+      <td id="T_057b9_row12_col3" class="data row12 col3" >1.0000</td>
+      <td id="T_057b9_row12_col4" class="data row12 col4" >0.2605</td>
+      <td id="T_057b9_row12_col5" class="data row12 col5" >0.8521</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row13" class="row_heading level0 row13" >13</th>
+      <td id="T_057b9_row13_col0" class="data row13 col0" >sepal_width</td>
+      <td id="T_057b9_row13_col1" class="data row13 col1" >virginica</td>
+      <td id="T_057b9_row13_col2" class="data row13 col2" >0.0296</td>
+      <td id="T_057b9_row13_col3" class="data row13 col3" >0.1381</td>
+      <td id="T_057b9_row13_col4" class="data row13 col4" >0.0035</td>
+      <td id="T_057b9_row13_col5" class="data row13 col5" >0.0677</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row14" class="row_heading level0 row14" >14</th>
+      <td id="T_057b9_row14_col0" class="data row14 col0" >petal_length</td>
+      <td id="T_057b9_row14_col1" class="data row14 col1" >virginica</td>
+      <td id="T_057b9_row14_col2" class="data row14 col2" >1.0000</td>
+      <td id="T_057b9_row14_col3" class="data row14 col3" >1.0000</td>
+      <td id="T_057b9_row14_col4" class="data row14 col4" >0.5031</td>
+      <td id="T_057b9_row14_col5" class="data row14 col5" >0.9006</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row15" class="row_heading level0 row15" >15</th>
+      <td id="T_057b9_row15_col0" class="data row15 col0" >petal_width</td>
+      <td id="T_057b9_row15_col1" class="data row15 col1" >virginica</td>
+      <td id="T_057b9_row15_col2" class="data row15 col2" >1.0000</td>
+      <td id="T_057b9_row15_col3" class="data row15 col3" >1.0000</td>
+      <td id="T_057b9_row15_col4" class="data row15 col4" >0.5384</td>
+      <td id="T_057b9_row15_col5" class="data row15 col5" >0.9077</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row16" class="row_heading level0 row16" >16</th>
+      <td id="T_057b9_row16_col0" class="data row16 col0" >petal_shape</td>
+      <td id="T_057b9_row16_col1" class="data row16 col1" >virginica</td>
+      <td id="T_057b9_row16_col2" class="data row16 col2" >0.9255</td>
+      <td id="T_057b9_row16_col3" class="data row16 col3" >0.6053</td>
+      <td id="T_057b9_row16_col4" class="data row16 col4" >0.2937</td>
+      <td id="T_057b9_row16_col5" class="data row16 col5" >0.6711</td>
+    </tr>
+    <tr>
+      <th id="T_057b9_level0_row17" class="row_heading level0 row17" >17</th>
+      <td id="T_057b9_row17_col0" class="data row17 col0" >sepal_dominance</td>
+      <td id="T_057b9_row17_col1" class="data row17 col1" >virginica</td>
+      <td id="T_057b9_row17_col2" class="data row17 col2" >0.6523</td>
+      <td id="T_057b9_row17_col3" class="data row17 col3" >0.5000</td>
+      <td id="T_057b9_row17_col4" class="data row17 col4" >0.2740</td>
+      <td id="T_057b9_row17_col5" class="data row17 col5" >0.5157</td>
+    </tr>
+  </tbody>
+</table>
+
+
+
+
+### Discriminative Score Visualization — Average Feature Importance
+
+
+```python
+# Average discriminative score across all OVR comparisons per feature
+avg_scores = disc_df.groupby("Feature")["S"].mean().sort_values(ascending=False)
+
+# Plot discriminative scores
+fig, ax = plt.subplots(figsize=(10, 6))
+colors = ["#4C72B0" if s >= 0.4 else "#DD8452" for s in avg_scores]
+avg_scores.plot(kind="barh", ax=ax, color=colors)
+ax.set_xlabel("Average Discriminative Score (S)")
+ax.set_title("Discriminative Score: Feature Importance (One-vs-Rest)")
+ax.axvline(
+    x=0.4, color="red", linestyle="--", linewidth=0.8, label="Moderate Threshold"
+)
+ax.legend()
+plt.tight_layout()
+plt.show()
+```
+
+
+    
+![png](README_files/I-MLP_108_0.png)
+    
+
+
+### Discriminative Score Visualization — Component Breakdown by Class
+
+
+```python
+# Component breakdown: P, E, M side by side for each class
+fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+for idx, class_name in enumerate(["setosa", "versicolor", "virginica"]):
+    class_data = disc_df[disc_df["Class"] == class_name].set_index("Feature")
+    class_data[["P", "E", "M"]].plot(kind="bar", ax=axes[idx], ylim=(0, 1.15))
+    axes[idx].set_title(f"Components: {class_name} vs Rest")
+    axes[idx].set_ylabel("Value")
+    axes[idx].set_xticklabels(axes[idx].get_xticklabels(), rotation=45, ha="right")
+    axes[idx].legend(loc="upper right")
+plt.tight_layout()
+plt.show()
+```
+
+
+    
+![png](README_files/I-MLP_110_0.png)
+    
+
+
+## Feature Selection Audit: Discriminative Score & Correlation
+
+
+```python
+def audit_reason(s):
+    """
+    Return a human-readable reason string based on discriminative score.
+
+    Parameters:
+        s (float): Average discriminative score.
+
+    Returns:
+        str: Interpretation of the score.
+    """
+    if s >= 0.8:
+        return "Excellent — top-tier discriminator"
+    if s >= 0.6:
+        return "Strong — reliable discriminator"
+    if s >= 0.4:
+        return "Moderate — decent feature"
+    if s >= 0.2:
+        return "Weak — marginal value"
+    return "Drop — not useful for classification"
+```
+
+
+```python
+all_corrs = df_train[features].corrwith(df_train[TARGET_VAR])
 results = []
-all_corrs = df_eda[features].corrwith(df_eda[TARGET_VAR])
 for col in features:
-    n_unique = df_eda[col].nunique()
+    s = avg_scores[col]
     corr = all_corrs[col]
-    abs_corr = abs(corr)
-    # Default logic
-    recommendation = "❌ DROP"
-    reason = f"(Weak Signal: {corr:.4f})"
-    # Threshold Logic
-    if abs_corr >= 0.01:
-        recommendation = "✅ KEEP"
-        reason = f"(Strong Signal)"
+    recommendation = "\u2705 KEEP" if s >= 0.4 else "\u274c DROP"
+    reason = audit_reason(s)
     results.append(
         {
             "Feature": col,
-            "Unique_Values": n_unique,
-            "Correlation": corr,
+            "Avg_S": round(s, 4),
+            "Correlation": round(corr, 4),
             "Recommendation": recommendation,
             "Reason": reason,
         }
     )
-audit_df = pd.DataFrame(results)
-# Create a temporary column for absolute sorting
-audit_df["abs_corr"] = audit_df["Correlation"].abs()
-# Sort by absolute correlation, Drop the temp column, and RESET the index
 audit_df = (
-    audit_df.sort_values("abs_corr", ascending=False)
-    .drop(columns=["abs_corr"])
-    .reset_index(drop=True)
+    pd.DataFrame(results).sort_values("Avg_S", ascending=False).reset_index(drop=True)
 )
 audit_df
 ```
@@ -1796,7 +2867,7 @@ audit_df
     <tr style="text-align: right;">
       <th></th>
       <th>Feature</th>
-      <th>Unique_Values</th>
+      <th>Avg_S</th>
       <th>Correlation</th>
       <th>Recommendation</th>
       <th>Reason</th>
@@ -1805,51 +2876,51 @@ audit_df
   <tbody>
     <tr>
       <th>0</th>
-      <td>petal_width</td>
-      <td>22</td>
-      <td>0.956464</td>
+      <td>sepal_dominance</td>
+      <td>0.6771</td>
+      <td>-0.8660</td>
       <td>✅ KEEP</td>
-      <td>(Strong Signal)</td>
+      <td>Strong — reliable discriminator</td>
     </tr>
     <tr>
       <th>1</th>
       <td>petal_length</td>
-      <td>43</td>
-      <td>0.949043</td>
+      <td>0.6643</td>
+      <td>0.9532</td>
       <td>✅ KEEP</td>
-      <td>(Strong Signal)</td>
+      <td>Strong — reliable discriminator</td>
     </tr>
     <tr>
       <th>2</th>
-      <td>sepal_dominance</td>
-      <td>2</td>
-      <td>-0.866025</td>
+      <td>petal_width</td>
+      <td>0.6311</td>
+      <td>0.9646</td>
       <td>✅ KEEP</td>
-      <td>(Strong Signal)</td>
+      <td>Strong — reliable discriminator</td>
     </tr>
     <tr>
       <th>3</th>
       <td>sepal_length</td>
-      <td>35</td>
-      <td>0.782561</td>
+      <td>0.5997</td>
+      <td>0.8054</td>
       <td>✅ KEEP</td>
-      <td>(Strong Signal)</td>
+      <td>Moderate — decent feature</td>
     </tr>
     <tr>
       <th>4</th>
-      <td>petal_shape</td>
-      <td>2</td>
-      <td>-0.577616</td>
+      <td>sepal_width</td>
+      <td>0.5352</td>
+      <td>-0.3639</td>
       <td>✅ KEEP</td>
-      <td>(Strong Signal)</td>
+      <td>Moderate — decent feature</td>
     </tr>
     <tr>
       <th>5</th>
-      <td>sepal_width</td>
-      <td>23</td>
-      <td>-0.419446</td>
+      <td>petal_shape</td>
+      <td>0.4076</td>
+      <td>-0.6137</td>
       <td>✅ KEEP</td>
-      <td>(Strong Signal)</td>
+      <td>Moderate — decent feature</td>
     </tr>
   </tbody>
 </table>
@@ -1876,7 +2947,7 @@ df_preprocessed.shape
 
 ### Drop Low-Correlation Features
 
-#### Based on EDA Recommendations, Drop Features w/ Correlation < 0.01; Low-Correlation
+#### Based on Recommendations, Drop Features w/ Low-Correlation
 
 
 ```python
@@ -1886,14 +2957,14 @@ df_preprocessed.shape
 # df_preprocessed
 ```
 
-### Save `df_preprocess` Processed Dataset
+### Save `df_preprocessed` Processed Dataset
 
 
 ```python
 df_preprocessed.to_csv("iris_dataset_preprocessed.csv", index=False)
 ```
 
-### Load `df_preprocess` Processed Dataset
+### Load `df_preprocessed` Processed Dataset
 
 
 ```python
@@ -2036,37 +3107,27 @@ df_preprocessed
 
 
 
-## Model
+## Reusable ML Pipeline
+
+### Model Architecture
 
 
 ```python
-class Model(nn.Module):
-    """
-    A feedforward neural network with two hidden layers and optional dropout.
-    """
+class IrisMLP(nn.Module):
+    """A feedforward neural network with two hidden layers and optional dropout."""
 
-    def __init__(
-        self,
-        in_features=IN_FEATURES,
-        h1=H1,
-        h2=H2,
-        out_features=OUT_FEATURES,
-        dropout=DROPOUT,
-    ):
+    def __init__(self, in_features, h1=8, h2=8, out_features=3, dropout=0.0):
         """
-        Initializes the neural network layers.
+        Initialize the neural network layers.
 
         Parameters:
             in_features (int): Number of input features.
-            h1 (int): Number of neurons in the first hidden layer.
-            h2 (int): Number of neurons in the second hidden layer.
-            out_features (int): Number of output features.
-            dropout (float): Dropout rate (0.0 = no dropout).
-
-        Returns:
-            None
+            h1 (int): Neurons in hidden layer 1.
+            h2 (int): Neurons in hidden layer 2.
+            out_features (int): Number of output classes.
+            dropout (float): Dropout rate.
         """
-        super(Model, self).__init__()
+        super().__init__()
         self.fc1 = nn.Linear(in_features, h1)
         self.fc2 = nn.Linear(h1, h2)
         self.out = nn.Linear(h2, out_features)
@@ -2074,592 +3135,51 @@ class Model(nn.Module):
 
     def forward(self, x):
         """
-        Defines the forward pass of the neural network.
+        Define the forward pass.
 
         Parameters:
             x (torch.Tensor): Input tensor.
 
         Returns:
-            torch.Tensor: Output tensor after passing through the network.
+            torch.Tensor: Output logits.
         """
         x = F.relu(self.fc1(x))
         x = self.dropout(x)
         x = F.relu(self.fc2(x))
         x = self.dropout(x)
-        x = self.out(x)
-        return x
+        return self.out(x)
 ```
 
-### Instantiate Model
-
-
-```python
-if torch.cuda.is_available():
-    DEVICE = torch.device("cuda")
-elif torch.backends.mps.is_available():
-    DEVICE = torch.device("mps")
-else:
-    DEVICE = torch.device("cpu")
-model = Model().to(DEVICE)
-model
-```
-
-
-
-
-    Model(
-      (fc1): Linear(in_features=6, out_features=8, bias=True)
-      (fc2): Linear(in_features=8, out_features=8, bias=True)
-      (out): Linear(in_features=8, out_features=3, bias=True)
-      (dropout): Dropout(p=0.0, inplace=False)
-    )
-
-
-
-
-```python
-next(model.parameters()).device
-```
-
-
-
-
-    device(type='mps', index=0)
-
-
-
-### Train-Test Split Model
-
-
-```python
-X = df_preprocessed.drop(TARGET_VAR, axis=1).values.astype("float32")
-X
-```
-
-
-
-
-    array([[5.1, 3.5, 1.4, 0.2, 1. , 1. ],
-           [4.9, 3. , 1.4, 0.2, 1. , 1. ],
-           [4.7, 3.2, 1.3, 0.2, 1. , 1. ],
-           [4.6, 3.1, 1.5, 0.2, 1. , 1. ],
-           [5. , 3.6, 1.4, 0.2, 1. , 1. ],
-           [5.4, 3.9, 1.7, 0.4, 1. , 1. ],
-           [4.6, 3.4, 1.4, 0.3, 1. , 1. ],
-           [5. , 3.4, 1.5, 0.2, 1. , 1. ],
-           [4.4, 2.9, 1.4, 0.2, 1. , 1. ],
-           [4.9, 3.1, 1.5, 0.1, 1. , 1. ],
-           [5.4, 3.7, 1.5, 0.2, 1. , 1. ],
-           [4.8, 3.4, 1.6, 0.2, 1. , 1. ],
-           [4.8, 3. , 1.4, 0.1, 1. , 1. ],
-           [4.3, 3. , 1.1, 0.1, 1. , 1. ],
-           [5.8, 4. , 1.2, 0.2, 1. , 1. ],
-           [5.7, 4.4, 1.5, 0.4, 1. , 1. ],
-           [5.4, 3.9, 1.3, 0.4, 1. , 1. ],
-           [5.1, 3.5, 1.4, 0.3, 1. , 1. ],
-           [5.7, 3.8, 1.7, 0.3, 1. , 1. ],
-           [5.1, 3.8, 1.5, 0.3, 1. , 1. ],
-           [5.4, 3.4, 1.7, 0.2, 1. , 1. ],
-           [5.1, 3.7, 1.5, 0.4, 1. , 1. ],
-           [4.6, 3.6, 1. , 0.2, 1. , 1. ],
-           [5.1, 3.3, 1.7, 0.5, 1. , 1. ],
-           [4.8, 3.4, 1.9, 0.2, 1. , 1. ],
-           [5. , 3. , 1.6, 0.2, 1. , 1. ],
-           [5. , 3.4, 1.6, 0.4, 1. , 1. ],
-           [5.2, 3.5, 1.5, 0.2, 1. , 1. ],
-           [5.2, 3.4, 1.4, 0.2, 1. , 1. ],
-           [4.7, 3.2, 1.6, 0.2, 1. , 1. ],
-           [4.8, 3.1, 1.6, 0.2, 1. , 1. ],
-           [5.4, 3.4, 1.5, 0.4, 1. , 1. ],
-           [5.2, 4.1, 1.5, 0.1, 1. , 1. ],
-           [5.5, 4.2, 1.4, 0.2, 1. , 1. ],
-           [4.9, 3.1, 1.5, 0.1, 1. , 1. ],
-           [5. , 3.2, 1.2, 0.2, 1. , 1. ],
-           [5.5, 3.5, 1.3, 0.2, 1. , 1. ],
-           [4.9, 3.1, 1.5, 0.1, 1. , 1. ],
-           [4.4, 3. , 1.3, 0.2, 1. , 1. ],
-           [5.1, 3.4, 1.5, 0.2, 1. , 1. ],
-           [5. , 3.5, 1.3, 0.3, 1. , 1. ],
-           [4.5, 2.3, 1.3, 0.3, 1. , 1. ],
-           [4.4, 3.2, 1.3, 0.2, 1. , 1. ],
-           [5. , 3.5, 1.6, 0.6, 0. , 1. ],
-           [5.1, 3.8, 1.9, 0.4, 1. , 1. ],
-           [4.8, 3. , 1.4, 0.3, 1. , 1. ],
-           [5.1, 3.8, 1.6, 0.2, 1. , 1. ],
-           [4.6, 3.2, 1.4, 0.2, 1. , 1. ],
-           [5.3, 3.7, 1.5, 0.2, 1. , 1. ],
-           [5. , 3.3, 1.4, 0.2, 1. , 1. ],
-           [7. , 3.2, 4.7, 1.4, 1. , 0. ],
-           [6.4, 3.2, 4.5, 1.5, 0. , 0. ],
-           [6.9, 3.1, 4.9, 1.5, 1. , 0. ],
-           [5.5, 2.3, 4. , 1.3, 1. , 0. ],
-           [6.5, 2.8, 4.6, 1.5, 1. , 0. ],
-           [5.7, 2.8, 4.5, 1.3, 1. , 0. ],
-           [6.3, 3.3, 4.7, 1.6, 0. , 0. ],
-           [4.9, 2.4, 3.3, 1. , 1. , 0. ],
-           [6.6, 2.9, 4.6, 1.3, 1. , 0. ],
-           [5.2, 2.7, 3.9, 1.4, 0. , 0. ],
-           [5. , 2. , 3.5, 1. , 1. , 0. ],
-           [5.9, 3. , 4.2, 1.5, 0. , 0. ],
-           [6. , 2.2, 4. , 1. , 1. , 0. ],
-           [6.1, 2.9, 4.7, 1.4, 1. , 0. ],
-           [5.6, 2.9, 3.6, 1.3, 0. , 0. ],
-           [6.7, 3.1, 4.4, 1.4, 1. , 0. ],
-           [5.6, 3. , 4.5, 1.5, 0. , 0. ],
-           [5.8, 2.7, 4.1, 1. , 1. , 0. ],
-           [6.2, 2.2, 4.5, 1.5, 0. , 0. ],
-           [5.6, 2.5, 3.9, 1.1, 1. , 0. ],
-           [5.9, 3.2, 4.8, 1.8, 0. , 0. ],
-           [6.1, 2.8, 4. , 1.3, 1. , 0. ],
-           [6.3, 2.5, 4.9, 1.5, 1. , 0. ],
-           [6.1, 2.8, 4.7, 1.2, 1. , 0. ],
-           [6.4, 2.9, 4.3, 1.3, 1. , 0. ],
-           [6.6, 3. , 4.4, 1.4, 1. , 0. ],
-           [6.8, 2.8, 4.8, 1.4, 1. , 0. ],
-           [6.7, 3. , 5. , 1.7, 0. , 0. ],
-           [6. , 2.9, 4.5, 1.5, 0. , 0. ],
-           [5.7, 2.6, 3.5, 1. , 1. , 0. ],
-           [5.5, 2.4, 3.8, 1.1, 1. , 0. ],
-           [5.5, 2.4, 3.7, 1. , 1. , 0. ],
-           [5.8, 2.7, 3.9, 1.2, 1. , 0. ],
-           [6. , 2.7, 5.1, 1.6, 1. , 0. ],
-           [5.4, 3. , 4.5, 1.5, 0. , 0. ],
-           [6. , 3.4, 4.5, 1.6, 0. , 0. ],
-           [6.7, 3.1, 4.7, 1.5, 1. , 0. ],
-           [6.3, 2.3, 4.4, 1.3, 1. , 0. ],
-           [5.6, 3. , 4.1, 1.3, 1. , 0. ],
-           [5.5, 2.5, 4. , 1.3, 1. , 0. ],
-           [5.5, 2.6, 4.4, 1.2, 1. , 0. ],
-           [6.1, 3. , 4.6, 1.4, 1. , 0. ],
-           [5.8, 2.6, 4. , 1.2, 1. , 0. ],
-           [5. , 2.3, 3.3, 1. , 1. , 0. ],
-           [5.6, 2.7, 4.2, 1.3, 1. , 0. ],
-           [5.7, 3. , 4.2, 1.2, 1. , 0. ],
-           [5.7, 2.9, 4.2, 1.3, 1. , 0. ],
-           [6.2, 2.9, 4.3, 1.3, 1. , 0. ],
-           [5.1, 2.5, 3. , 1.1, 0. , 0. ],
-           [5.7, 2.8, 4.1, 1.3, 1. , 0. ],
-           [6.3, 3.3, 6. , 2.5, 0. , 0. ],
-           [5.8, 2.7, 5.1, 1.9, 0. , 0. ],
-           [7.1, 3. , 5.9, 2.1, 0. , 0. ],
-           [6.3, 2.9, 5.6, 1.8, 1. , 0. ],
-           [6.5, 3. , 5.8, 2.2, 0. , 0. ],
-           [7.6, 3. , 6.6, 2.1, 1. , 0. ],
-           [4.9, 2.5, 4.5, 1.7, 0. , 0. ],
-           [7.3, 2.9, 6.3, 1.8, 1. , 0. ],
-           [6.7, 2.5, 5.8, 1.8, 1. , 0. ],
-           [7.2, 3.6, 6.1, 2.5, 0. , 0. ],
-           [6.5, 3.2, 5.1, 2. , 0. , 0. ],
-           [6.4, 2.7, 5.3, 1.9, 0. , 0. ],
-           [6.8, 3. , 5.5, 2.1, 0. , 0. ],
-           [5.7, 2.5, 5. , 2. , 0. , 0. ],
-           [5.8, 2.8, 5.1, 2.4, 0. , 0. ],
-           [6.4, 3.2, 5.3, 2.3, 0. , 0. ],
-           [6.5, 3. , 5.5, 1.8, 1. , 0. ],
-           [7.7, 3.8, 6.7, 2.2, 1. , 0. ],
-           [7.7, 2.6, 6.9, 2.3, 1. , 0. ],
-           [6. , 2.2, 5. , 1.5, 1. , 0. ],
-           [6.9, 3.2, 5.7, 2.3, 0. , 0. ],
-           [5.6, 2.8, 4.9, 2. , 0. , 0. ],
-           [7.7, 2.8, 6.7, 2. , 1. , 0. ],
-           [6.3, 2.7, 4.9, 1.8, 0. , 0. ],
-           [6.7, 3.3, 5.7, 2.1, 0. , 0. ],
-           [7.2, 3.2, 6. , 1.8, 1. , 0. ],
-           [6.2, 2.8, 4.8, 1.8, 0. , 0. ],
-           [6.1, 3. , 4.9, 1.8, 0. , 0. ],
-           [6.4, 2.8, 5.6, 2.1, 0. , 0. ],
-           [7.2, 3. , 5.8, 1.6, 1. , 0. ],
-           [7.4, 2.8, 6.1, 1.9, 1. , 0. ],
-           [7.9, 3.8, 6.4, 2. , 1. , 0. ],
-           [6.4, 2.8, 5.6, 2.2, 0. , 0. ],
-           [6.3, 2.8, 5.1, 1.5, 1. , 0. ],
-           [6.1, 2.6, 5.6, 1.4, 1. , 0. ],
-           [7.7, 3. , 6.1, 2.3, 0. , 0. ],
-           [6.3, 3.4, 5.6, 2.4, 0. , 0. ],
-           [6.4, 3.1, 5.5, 1.8, 1. , 0. ],
-           [6. , 3. , 4.8, 1.8, 0. , 0. ],
-           [6.9, 3.1, 5.4, 2.1, 0. , 0. ],
-           [6.7, 3.1, 5.6, 2.4, 0. , 0. ],
-           [6.9, 3.1, 5.1, 2.3, 0. , 0. ],
-           [5.8, 2.7, 5.1, 1.9, 0. , 0. ],
-           [6.8, 3.2, 5.9, 2.3, 0. , 0. ],
-           [6.7, 3.3, 5.7, 2.5, 0. , 0. ],
-           [6.7, 3. , 5.2, 2.3, 0. , 0. ],
-           [6.3, 2.5, 5. , 1.9, 0. , 0. ],
-           [6.5, 3. , 5.2, 2. , 0. , 0. ],
-           [6.2, 3.4, 5.4, 2.3, 0. , 0. ],
-           [5.9, 3. , 5.1, 1.8, 0. , 0. ]], dtype=float32)
-
-
-
-
-```python
-X.shape
-```
-
-
-
-
-    (150, 6)
-
-
-
-
-```python
-y = df_preprocessed[TARGET_VAR].values.astype("int64")
-y
-```
-
-
-
-
-    array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-           0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-           0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-           1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-           1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-           2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-           2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2])
-
-
-
-
-```python
-y.shape
-```
-
-
-
-
-    (150,)
-
-
-
-
-```python
-train_idx, test_idx = train_test_split(
-    np.arange(len(X)), test_size=TEST_SIZE, random_state=SEED, stratify=y
-)
-X_train, X_test = X[train_idx], X[test_idx]
-y_train, y_test = y[train_idx], y[test_idx]
-len(train_idx), len(test_idx)
-```
-
-
-
-
-    (105, 45)
-
-
-
-
-```python
-X_train
-```
-
-
-
-
-    array([[5.1, 2.5, 3. , 1.1, 0. , 0. ],
-           [6.2, 2.2, 4.5, 1.5, 0. , 0. ],
-           [5.1, 3.8, 1.5, 0.3, 1. , 1. ],
-           [6.8, 3.2, 5.9, 2.3, 0. , 0. ],
-           [5.7, 2.8, 4.1, 1.3, 1. , 0. ],
-           [6.7, 3. , 5.2, 2.3, 0. , 0. ],
-           [4.9, 3.1, 1.5, 0.1, 1. , 1. ],
-           [5.1, 3.8, 1.6, 0.2, 1. , 1. ],
-           [4.4, 2.9, 1.4, 0.2, 1. , 1. ],
-           [7.1, 3. , 5.9, 2.1, 0. , 0. ],
-           [6.5, 3.2, 5.1, 2. , 0. , 0. ],
-           [4.9, 3. , 1.4, 0.2, 1. , 1. ],
-           [5. , 3. , 1.6, 0.2, 1. , 1. ],
-           [6. , 2.9, 4.5, 1.5, 0. , 0. ],
-           [5.5, 2.4, 3.8, 1.1, 1. , 0. ],
-           [7.2, 3.2, 6. , 1.8, 1. , 0. ],
-           [5. , 3.4, 1.6, 0.4, 1. , 1. ],
-           [4.7, 3.2, 1.6, 0.2, 1. , 1. ],
-           [6.7, 3.3, 5.7, 2.5, 0. , 0. ],
-           [5.9, 3.2, 4.8, 1.8, 0. , 0. ],
-           [5.4, 3.4, 1.5, 0.4, 1. , 1. ],
-           [6.3, 2.7, 4.9, 1.8, 0. , 0. ],
-           [7.6, 3. , 6.6, 2.1, 1. , 0. ],
-           [7.7, 2.8, 6.7, 2. , 1. , 0. ],
-           [5.7, 3. , 4.2, 1.2, 1. , 0. ],
-           [4.6, 3.4, 1.4, 0.3, 1. , 1. ],
-           [5.1, 3.7, 1.5, 0.4, 1. , 1. ],
-           [5.4, 3.9, 1.3, 0.4, 1. , 1. ],
-           [6.9, 3.1, 4.9, 1.5, 1. , 0. ],
-           [5.5, 2.5, 4. , 1.3, 1. , 0. ],
-           [5.7, 4.4, 1.5, 0.4, 1. , 1. ],
-           [5.1, 3.5, 1.4, 0.3, 1. , 1. ],
-           [5.8, 2.7, 4.1, 1. , 1. , 0. ],
-           [5.6, 2.9, 3.6, 1.3, 0. , 0. ],
-           [4.8, 3. , 1.4, 0.1, 1. , 1. ],
-           [4.8, 3. , 1.4, 0.3, 1. , 1. ],
-           [6.7, 3.1, 4.4, 1.4, 1. , 0. ],
-           [6.3, 2.5, 5. , 1.9, 0. , 0. ],
-           [7.9, 3.8, 6.4, 2. , 1. , 0. ],
-           [5.1, 3.5, 1.4, 0.2, 1. , 1. ],
-           [6.4, 2.8, 5.6, 2.1, 0. , 0. ],
-           [4.6, 3.2, 1.4, 0.2, 1. , 1. ],
-           [6. , 2.2, 5. , 1.5, 1. , 0. ],
-           [5.5, 3.5, 1.3, 0.2, 1. , 1. ],
-           [6.3, 3.3, 6. , 2.5, 0. , 0. ],
-           [6. , 2.2, 4. , 1. , 1. , 0. ],
-           [4.8, 3.4, 1.9, 0.2, 1. , 1. ],
-           [7.7, 3. , 6.1, 2.3, 0. , 0. ],
-           [6.1, 2.8, 4. , 1.3, 1. , 0. ],
-           [5.7, 2.5, 5. , 2. , 0. , 0. ],
-           [5.8, 2.7, 3.9, 1.2, 1. , 0. ],
-           [4.5, 2.3, 1.3, 0.3, 1. , 1. ],
-           [5.5, 2.4, 3.7, 1. , 1. , 0. ],
-           [6.4, 3.1, 5.5, 1.8, 1. , 0. ],
-           [6.1, 3. , 4.6, 1.4, 1. , 0. ],
-           [6.3, 2.9, 5.6, 1.8, 1. , 0. ],
-           [5.1, 3.4, 1.5, 0.2, 1. , 1. ],
-           [5.7, 2.9, 4.2, 1.3, 1. , 0. ],
-           [5. , 3.6, 1.4, 0.2, 1. , 1. ],
-           [6.7, 3.1, 4.7, 1.5, 1. , 0. ],
-           [6.8, 2.8, 4.8, 1.4, 1. , 0. ],
-           [5.2, 2.7, 3.9, 1.4, 0. , 0. ],
-           [7.2, 3.6, 6.1, 2.5, 0. , 0. ],
-           [6. , 2.7, 5.1, 1.6, 1. , 0. ],
-           [6.4, 2.9, 4.3, 1.3, 1. , 0. ],
-           [6.3, 3.4, 5.6, 2.4, 0. , 0. ],
-           [5.6, 2.8, 4.9, 2. , 0. , 0. ],
-           [4.9, 3.1, 1.5, 0.1, 1. , 1. ],
-           [6.9, 3.2, 5.7, 2.3, 0. , 0. ],
-           [6.5, 2.8, 4.6, 1.5, 1. , 0. ],
-           [5.6, 3. , 4.1, 1.3, 1. , 0. ],
-           [7.7, 2.6, 6.9, 2.3, 1. , 0. ],
-           [5.2, 4.1, 1.5, 0.1, 1. , 1. ],
-           [6.4, 3.2, 5.3, 2.3, 0. , 0. ],
-           [5.9, 3. , 5.1, 1.8, 0. , 0. ],
-           [6.3, 2.3, 4.4, 1.3, 1. , 0. ],
-           [4.8, 3.1, 1.6, 0.2, 1. , 1. ],
-           [7.7, 3.8, 6.7, 2.2, 1. , 0. ],
-           [6.8, 3. , 5.5, 2.1, 0. , 0. ],
-           [5.1, 3.8, 1.9, 0.4, 1. , 1. ],
-           [4.3, 3. , 1.1, 0.1, 1. , 1. ],
-           [6.2, 2.8, 4.8, 1.8, 0. , 0. ],
-           [7.2, 3. , 5.8, 1.6, 1. , 0. ],
-           [5.8, 2.8, 5.1, 2.4, 0. , 0. ],
-           [5.4, 3.9, 1.7, 0.4, 1. , 1. ],
-           [5.8, 2.7, 5.1, 1.9, 0. , 0. ],
-           [5. , 2. , 3.5, 1. , 1. , 0. ],
-           [6.7, 3.3, 5.7, 2.1, 0. , 0. ],
-           [7.4, 2.8, 6.1, 1.9, 1. , 0. ],
-           [5.3, 3.7, 1.5, 0.2, 1. , 1. ],
-           [6.1, 2.8, 4.7, 1.2, 1. , 0. ],
-           [5.5, 2.6, 4.4, 1.2, 1. , 0. ],
-           [7. , 3.2, 4.7, 1.4, 1. , 0. ],
-           [6.3, 2.5, 4.9, 1.5, 1. , 0. ],
-           [5.9, 3. , 4.2, 1.5, 0. , 0. ],
-           [5.2, 3.5, 1.5, 0.2, 1. , 1. ],
-           [6.9, 3.1, 5.4, 2.1, 0. , 0. ],
-           [5.8, 2.6, 4. , 1.2, 1. , 0. ],
-           [5.8, 2.7, 5.1, 1.9, 0. , 0. ],
-           [4.8, 3.4, 1.6, 0.2, 1. , 1. ],
-           [4.9, 3.1, 1.5, 0.1, 1. , 1. ],
-           [5.7, 2.6, 3.5, 1. , 1. , 0. ],
-           [5.5, 4.2, 1.4, 0.2, 1. , 1. ],
-           [5.6, 2.7, 4.2, 1.3, 1. , 0. ],
-           [4.6, 3.1, 1.5, 0.2, 1. , 1. ]], dtype=float32)
-
-
-
-
-```python
-X_train.shape
-```
-
-
-
-
-    (105, 6)
-
-
-
-
-```python
-y_train
-```
-
-
-
-
-    array([1, 1, 0, 2, 1, 2, 0, 0, 0, 2, 2, 0, 0, 1, 1, 2, 0, 0, 2, 1, 0, 2,
-           2, 2, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 2, 2, 0, 2, 0, 2, 0,
-           2, 1, 0, 2, 1, 2, 1, 0, 1, 2, 1, 2, 0, 1, 0, 1, 1, 1, 2, 1, 1, 2,
-           2, 0, 2, 1, 1, 2, 0, 2, 2, 1, 0, 2, 2, 0, 0, 2, 2, 2, 0, 2, 1, 2,
-           2, 0, 1, 1, 1, 1, 1, 0, 2, 1, 2, 0, 0, 1, 0, 1, 0])
-
-
-
-
-```python
-y_train.shape
-```
-
-
-
-
-    (105,)
-
-
-
-
-```python
-X_test
-```
-
-
-
-
-    array([[7.3, 2.9, 6.3, 1.8, 1. , 0. ],
-           [6.1, 2.9, 4.7, 1.4, 1. , 0. ],
-           [6.3, 2.8, 5.1, 1.5, 1. , 0. ],
-           [6.3, 3.3, 4.7, 1.6, 0. , 0. ],
-           [6.1, 3. , 4.9, 1.8, 0. , 0. ],
-           [6.7, 3.1, 5.6, 2.4, 0. , 0. ],
-           [5.5, 2.3, 4. , 1.3, 1. , 0. ],
-           [5.6, 2.5, 3.9, 1.1, 1. , 0. ],
-           [5.4, 3.4, 1.7, 0.2, 1. , 1. ],
-           [6.9, 3.1, 5.1, 2.3, 0. , 0. ],
-           [5.8, 4. , 1.2, 0.2, 1. , 1. ],
-           [4.4, 3. , 1.3, 0.2, 1. , 1. ],
-           [6.7, 2.5, 5.8, 1.8, 1. , 0. ],
-           [6.5, 3. , 5.5, 1.8, 1. , 0. ],
-           [5.2, 3.4, 1.4, 0.2, 1. , 1. ],
-           [6.2, 3.4, 5.4, 2.3, 0. , 0. ],
-           [4.9, 2.4, 3.3, 1. , 1. , 0. ],
-           [5.4, 3.7, 1.5, 0.2, 1. , 1. ],
-           [5.1, 3.3, 1.7, 0.5, 1. , 1. ],
-           [5.7, 3.8, 1.7, 0.3, 1. , 1. ],
-           [6.2, 2.9, 4.3, 1.3, 1. , 0. ],
-           [5. , 3.4, 1.5, 0.2, 1. , 1. ],
-           [6.6, 3. , 4.4, 1.4, 1. , 0. ],
-           [6.5, 3. , 5.8, 2.2, 0. , 0. ],
-           [6. , 3. , 4.8, 1.8, 0. , 0. ],
-           [6.4, 3.2, 4.5, 1.5, 0. , 0. ],
-           [5.4, 3. , 4.5, 1.5, 0. , 0. ],
-           [5. , 2.3, 3.3, 1. , 1. , 0. ],
-           [5.6, 3. , 4.5, 1.5, 0. , 0. ],
-           [5. , 3.2, 1.2, 0.2, 1. , 1. ],
-           [6.1, 2.6, 5.6, 1.4, 1. , 0. ],
-           [6.4, 2.8, 5.6, 2.2, 0. , 0. ],
-           [6. , 3.4, 4.5, 1.6, 0. , 0. ],
-           [5. , 3.3, 1.4, 0.2, 1. , 1. ],
-           [6.4, 2.7, 5.3, 1.9, 0. , 0. ],
-           [5. , 3.5, 1.3, 0.3, 1. , 1. ],
-           [4.4, 3.2, 1.3, 0.2, 1. , 1. ],
-           [4.7, 3.2, 1.3, 0.2, 1. , 1. ],
-           [5. , 3.5, 1.6, 0.6, 0. , 1. ],
-           [6.7, 3. , 5. , 1.7, 0. , 0. ],
-           [5.7, 2.8, 4.5, 1.3, 1. , 0. ],
-           [4.6, 3.6, 1. , 0.2, 1. , 1. ],
-           [4.9, 2.5, 4.5, 1.7, 0. , 0. ],
-           [6.5, 3. , 5.2, 2. , 0. , 0. ],
-           [6.6, 2.9, 4.6, 1.3, 1. , 0. ]], dtype=float32)
-
-
-
-
-```python
-X_test.shape
-```
-
-
-
-
-    (45, 6)
-
-
-
-
-```python
-y_test
-```
-
-
-
-
-    array([2, 1, 2, 1, 2, 2, 1, 1, 0, 2, 0, 0, 2, 2, 0, 2, 1, 0, 0, 0, 1, 0,
-           1, 2, 2, 1, 1, 1, 1, 0, 2, 2, 1, 0, 2, 0, 0, 0, 0, 1, 1, 0, 2, 2,
-           1])
-
-
-
-
-```python
-y_test.shape
-```
-
-
-
-
-    (45,)
-
-
-
-### Scale Features
-
-
-```python
-scaler = StandardScaler()
-X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=features)
-X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=features)
-
-# Save scaler for inference
-joblib.dump(scaler, "iris_scaler.pkl")
-print("Scaler Saved: 'iris_scaler.pkl'")
-```
-
-    Scaler Saved: 'iris_scaler.pkl'
-
-
-### Create Custom Dataset (Memory Efficient)
+### Dataset Class
 
 
 ```python
 class NumpyDataset(torch.utils.data.Dataset):
-    """
-    A memory-efficient dataset that keeps data as numpy arrays.
-    Converts to tensors only when batching (on-demand).
-    Specifically designed for classification tasks.
-    """
+    """Memory-efficient dataset converting numpy arrays to tensors on demand."""
 
     def __init__(self, X, y, device):
         """
-        Initializes the dataset with numpy arrays.
+        Initialize with numpy arrays.
 
         Parameters:
             X (np.ndarray): Feature array.
-            y (np.ndarray): Label array (classification targets).
-            device (torch.device): Device to move tensors to.
-
-        Returns:
-            None
+            y (np.ndarray): Label array.
+            device (torch.device): Target device.
         """
         self.X = X
         self.y = y
         self.device = device
 
     def __len__(self):
-        """
-        Returns the number of samples in the dataset.
-
-        Returns:
-            int: Number of samples.
-        """
+        """Return the number of samples in the dataset."""
         return len(self.X)
 
     def __getitem__(self, idx):
         """
-        Returns a single sample as tensors on the specified device.
+        Return a single sample as tensors on the specified device.
 
         Parameters:
-            idx (int): Index of the sample.
+            idx (int): Sample index.
 
         Returns:
             tuple[torch.Tensor, torch.Tensor]: Feature and label tensors.
@@ -2669,411 +3189,862 @@ class NumpyDataset(torch.utils.data.Dataset):
         return X_tensor, y_tensor
 ```
 
-## Create DataLoaders
+### Data Preparation Functions
 
 
 ```python
-train_dataset = NumpyDataset(X_train_scaled.values, y_train, DEVICE)
-test_dataset = NumpyDataset(X_test_scaled.values, y_test, DEVICE)
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
-len(train_loader), len(test_loader)
-```
+def _extract_arrays(df, feature_cols, target_col):
+    """
+    Extract feature and target arrays from a DataFrame.
+
+    Parameters:
+        df (pd.DataFrame): Source dataframe.
+        feature_cols (list): Feature column names.
+        target_col (str): Target column name.
+
+    Returns:
+        tuple: (X, y) as numpy arrays.
+    """
+    X = df[feature_cols].values.astype("float32")
+    y = df[target_col].values.astype("int64")
+    return X, y
 
 
+def _fit_scaler(X_train, feature_cols):
+    """
+    Fit StandardScaler on training features.
+
+    Parameters:
+        X_train (np.ndarray): Training feature array.
+        feature_cols (list): Feature column names.
+
+    Returns:
+        tuple: (scaled_DataFrame, fitted_scaler).
+    """
+    scaler = StandardScaler()
+    X_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=feature_cols)
+    return X_scaled, scaler
 
 
-    (4, 2)
+def _scale_array(X, scaler, feature_cols):
+    """
+    Transform a feature array with a fitted scaler.
+
+    Parameters:
+        X (np.ndarray): Feature array to transform.
+        scaler (StandardScaler): Fitted scaler.
+        feature_cols (list): Feature column names.
+
+    Returns:
+        pd.DataFrame: Scaled features.
+    """
+    return pd.DataFrame(scaler.transform(X), columns=feature_cols)
 
 
+def _split_indices(n, size, seed, stratify):
+    """
+    Return stratified train/validation index arrays.
 
-## Create Loss Function & Optimizer
+    Parameters:
+        n (int): Total number of samples.
+        size (float): Fraction for the validation set.
+        seed (int): Random seed.
+        stratify (np.ndarray): Labels for stratification.
 
-
-```python
-# Initialize the model strictly using CrossEntropyLoss for the classification task
-if df[TARGET_VAR].nunique() == 2:
-    # Binary Classification (Output layer must have 1 neuron)
-    criterion = nn.BCEWithLogitsLoss()
-else:
-    # Multi-class Classification (Output layer must have 2+ neurons)
-    criterion = nn.CrossEntropyLoss()
-criterion
-```
-
-
-
-
-    CrossEntropyLoss()
-
-
-
-
-```python
-optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
-optimizer
-```
-
-
-
-
-    AdamW (
-    Parameter Group 0
-        amsgrad: False
-        betas: (0.9, 0.999)
-        capturable: False
-        decoupled_weight_decay: True
-        differentiable: False
-        eps: 1e-08
-        foreach: None
-        fused: None
-        lr: 0.01
-        maximize: False
-        weight_decay: 0.01
+    Returns:
+        tuple: (train_indices, val_indices).
+    """
+    return train_test_split(
+        np.arange(n), test_size=size, random_state=seed, stratify=stratify
     )
 
 
+def prepare_data(df_train, df_test, feature_cols, target_col, val_size, seed):
+    """
+    Sub-split train into train/val, scale all three sets, return arrays + scaler.
 
-## Train Model
+    Parameters:
+        df_train (pd.DataFrame): Training dataframe (from early split).
+        df_test (pd.DataFrame): Test dataframe (from early split).
+        feature_cols (list): Feature column names.
+        target_col (str): Target column name.
+        val_size (float): Fraction of training data for validation.
+        seed (int): Random seed.
+
+    Returns:
+        tuple: (X_tr, X_val, X_te, y_tr, y_val, y_te, scaler).
+    """
+    X_all, y_all = _extract_arrays(df_train, feature_cols, target_col)
+    X_te_raw, y_te = _extract_arrays(df_test, feature_cols, target_col)
+    tr_idx, val_idx = _split_indices(len(X_all), val_size, seed, y_all)
+    X_tr, scaler = _fit_scaler(X_all[tr_idx], feature_cols)
+    X_val = _scale_array(X_all[val_idx], scaler, feature_cols)
+    X_te = _scale_array(X_te_raw, scaler, feature_cols)
+    return X_tr, X_val, X_te, y_all[tr_idx], y_all[val_idx], y_te, scaler
 
 
-```python
-train_losses = []
-val_losses = []
-train_losses, val_losses
+def _compute_class_weights(y_train, device):
+    """
+    Compute inverse-frequency class weights for imbalanced datasets.
+
+    Parameters:
+        y_train (np.ndarray): Training labels.
+        device (torch.device): Target device for the weight tensor.
+
+    Returns:
+        torch.Tensor: Class weight tensor (balanced datasets get ~equal weights).
+    """
+    counts = np.bincount(y_train)
+    weights = len(y_train) / (len(counts) * counts)
+    return torch.tensor(weights, dtype=torch.float32).to(device)
+
+
+def _make_loader(X, y, device, batch_size, shuffle):
+    """
+    Create a DataLoader from a feature DataFrame and label array.
+
+    Parameters:
+        X (pd.DataFrame): Scaled feature DataFrame.
+        y (np.ndarray): Label array.
+        device (torch.device): Target device.
+        batch_size (int): Batch size.
+        shuffle (bool): Whether to shuffle.
+
+    Returns:
+        DataLoader: Configured data loader.
+    """
+    return DataLoader(
+        NumpyDataset(X.values, y, device), batch_size=batch_size, shuffle=shuffle
+    )
+
+
+def create_loaders(X_tr, X_val, X_te, y_tr, y_val, y_te, device, batch_size):
+    """
+    Create train, validation, and test DataLoaders.
+
+    Parameters:
+        X_tr (pd.DataFrame): Scaled training features.
+        X_val (pd.DataFrame): Scaled validation features.
+        X_te (pd.DataFrame): Scaled test features.
+        y_tr (np.ndarray): Training labels.
+        y_val (np.ndarray): Validation labels.
+        y_te (np.ndarray): Test labels.
+        device (torch.device): Target device.
+        batch_size (int): Batch size.
+
+    Returns:
+        tuple: (train_loader, val_loader, test_loader).
+    """
+    train_ldr = _make_loader(X_tr, y_tr, device, batch_size, shuffle=True)
+    val_ldr = _make_loader(X_val, y_val, device, batch_size, shuffle=False)
+    test_ldr = _make_loader(X_te, y_te, device, batch_size, shuffle=False)
+    return train_ldr, val_ldr, test_ldr
 ```
 
-
-
-
-    ([], [])
-
-
+### Training Functions
 
 
 ```python
-best_val_loss = float("inf")
-for i in range(EPOCHS):
+def _train_batch(model, X_batch, y_batch, criterion, optimizer):
+    """
+    Process one training batch and return batch loss.
+
+    Parameters:
+        model (nn.Module): Model being trained.
+        X_batch (torch.Tensor): Input batch.
+        y_batch (torch.Tensor): Label batch.
+        criterion: Loss function.
+        optimizer: Optimizer.
+
+    Returns:
+        float: Batch loss value.
+    """
+    optimizer.zero_grad()
+    loss = criterion(model(X_batch), y_batch)
+    loss.backward()
+    optimizer.step()
+    return loss.item()
+
+
+def _run_train_epoch(model, loader, criterion, optimizer):
+    """
+    Run one full training epoch and return average loss.
+
+    Parameters:
+        model (nn.Module): Model being trained.
+        loader (DataLoader): Training data loader.
+        criterion: Loss function.
+        optimizer: Optimizer.
+
+    Returns:
+        float: Average training loss for the epoch.
+    """
     model.train()
-    epoch_train_loss = 0.0
-    for X_batch, y_batch in train_loader:
-        optimizer.zero_grad()
-        y_pred = model(X_batch)
-        loss = criterion(y_pred, y_batch)
-        loss.backward()
-        optimizer.step()
-        epoch_train_loss += loss.item()
-    train_loss = epoch_train_loss / len(train_loader)
-    train_losses.append(train_loss)
+    total_loss = 0.0
+    for X_batch, y_batch in loader:
+        total_loss += _train_batch(model, X_batch, y_batch, criterion, optimizer)
+    return total_loss / len(loader)
+
+
+def _run_val_epoch(model, loader, criterion):
+    """
+    Run one full validation epoch and return average loss.
+
+    Parameters:
+        model (nn.Module): Model being evaluated.
+        loader (DataLoader): Validation data loader.
+        criterion: Loss function.
+
+    Returns:
+        float: Average validation loss for the epoch.
+    """
     model.eval()
-    epoch_val_loss = 0.0
+    total_loss = 0.0
     with torch.no_grad():
-        for X_batch, y_batch in test_loader:
-            y_val_pred = model(X_batch)
-            epoch_val_loss += criterion(y_val_pred, y_batch).item()
-    val_loss = epoch_val_loss / len(test_loader)
-    val_losses.append(val_loss)
-    # Save model if validation loss improves
+        for X_batch, y_batch in loader:
+            total_loss += criterion(model(X_batch), y_batch).item()
+    return total_loss / len(loader)
+
+
+def _save_if_improved(model, val_loss, best_val_loss, path, counter):
+    """
+    Save model if val loss improved; return (best_loss, patience_counter).
+
+    Parameters:
+        model (nn.Module): Model to potentially save.
+        val_loss (float): Current validation loss.
+        best_val_loss (float): Best validation loss so far.
+        path (str): File path for saving weights.
+        counter (int): Current patience counter.
+
+    Returns:
+        tuple: (updated_best_loss, updated_patience_counter).
+    """
     if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        torch.save(model.state_dict(), "iris_model.pth")
-    if i % LOG_INTERVAL == 0:
-        print(
-            f"Epoch {i}/{EPOCHS} - Training Loss: {train_loss:.4f} - Validation Loss: {val_loss:.4f}"
+        torch.save(model.state_dict(), path)
+        return val_loss, 0
+    return best_val_loss, counter + 1
+
+
+def _check_early_stop(counter, patience, epoch):
+    """
+    Print message and return True if patience is exhausted.
+
+    Parameters:
+        counter (int): Epochs without improvement.
+        patience (int): Maximum allowed patience.
+        epoch (int): Current epoch number.
+
+    Returns:
+        bool: True if training should stop.
+    """
+    if counter >= patience:
+        print(f"Early stopping at epoch {epoch} (patience={patience})")
+        return True
+    return False
+
+
+def _log_progress(epoch, epochs, train_loss, val_loss, interval):
+    """
+    Print epoch progress at specified intervals.
+
+    Parameters:
+        epoch (int): Current epoch number.
+        epochs (int): Total number of epochs.
+        train_loss (float): Training loss for this epoch.
+        val_loss (float): Validation loss for this epoch.
+        interval (int): Logging interval.
+    """
+    if epoch % interval == 0:
+        print(f"Epoch {epoch}/{epochs} - Train: {train_loss:.4f} - Val: {val_loss:.4f}")
+
+
+def train_model(model, train_loader, val_loader, criterion, optimizer, config):
+    """
+    Full training loop with validation, checkpointing, early stopping, and logging.
+
+    Parameters:
+        model (nn.Module): Model to train.
+        train_loader (DataLoader): Training data loader.
+        val_loader (DataLoader): Validation data loader.
+        criterion: Loss function.
+        optimizer: Optimizer.
+        config (dict): Keys: epochs, log_interval, save_path, patience.
+
+    Returns:
+        tuple: (train_losses, val_losses, best_val_loss).
+    """
+    train_losses, val_losses, best, ctr = [], [], float("inf"), 0
+    for epoch in range(config["epochs"]):
+        train_losses.append(_run_train_epoch(model, train_loader, criterion, optimizer))
+        val_losses.append(_run_val_epoch(model, val_loader, criterion))
+        best, ctr = _save_if_improved(
+            model, val_losses[-1], best, config["save_path"], ctr
         )
-print("-" * 30)
-print(f"Best Validation Loss: {best_val_loss:.4f}")
-print("Model Weights Saved: 'iris_model.pth'")
+        _log_progress(
+            epoch,
+            config["epochs"],
+            train_losses[-1],
+            val_losses[-1],
+            config["log_interval"],
+        )
+        if _check_early_stop(ctr, config["patience"], epoch):
+            break
+    return train_losses, val_losses, best
 ```
 
-    Epoch 0/1000 - Training Loss: 1.1365 - Validation Loss: 1.1353
-    Epoch 10/1000 - Training Loss: 0.4889 - Validation Loss: 0.4439
-    Epoch 20/1000 - Training Loss: 0.2784 - Validation Loss: 0.3909
-    Epoch 30/1000 - Training Loss: 0.1604 - Validation Loss: 0.3489
-    Epoch 40/1000 - Training Loss: 0.0784 - Validation Loss: 0.2354
-    Epoch 50/1000 - Training Loss: 0.0553 - Validation Loss: 0.1771
-    Epoch 60/1000 - Training Loss: 0.0396 - Validation Loss: 0.1368
-    Epoch 70/1000 - Training Loss: 0.0319 - Validation Loss: 0.1300
-    Epoch 80/1000 - Training Loss: 0.0292 - Validation Loss: 0.1357
-    Epoch 90/1000 - Training Loss: 0.0258 - Validation Loss: 0.1336
-    Epoch 100/1000 - Training Loss: 0.0226 - Validation Loss: 0.1455
-    Epoch 110/1000 - Training Loss: 0.0200 - Validation Loss: 0.1633
-    Epoch 120/1000 - Training Loss: 0.0183 - Validation Loss: 0.1561
-    Epoch 130/1000 - Training Loss: 0.0263 - Validation Loss: 0.1887
-    Epoch 140/1000 - Training Loss: 0.0188 - Validation Loss: 0.1594
-    Epoch 150/1000 - Training Loss: 0.0154 - Validation Loss: 0.1746
-    Epoch 160/1000 - Training Loss: 0.0168 - Validation Loss: 0.1951
-    Epoch 170/1000 - Training Loss: 0.0216 - Validation Loss: 0.1519
-    Epoch 180/1000 - Training Loss: 0.0326 - Validation Loss: 0.2079
-    Epoch 190/1000 - Training Loss: 0.0159 - Validation Loss: 0.2024
-    Epoch 200/1000 - Training Loss: 0.0143 - Validation Loss: 0.1760
-    Epoch 210/1000 - Training Loss: 0.0128 - Validation Loss: 0.1626
-    Epoch 220/1000 - Training Loss: 0.0121 - Validation Loss: 0.1891
-    Epoch 230/1000 - Training Loss: 0.0235 - Validation Loss: 0.1787
-    Epoch 240/1000 - Training Loss: 0.0085 - Validation Loss: 0.1740
-    Epoch 250/1000 - Training Loss: 0.0104 - Validation Loss: 0.1624
-    Epoch 260/1000 - Training Loss: 0.0126 - Validation Loss: 0.2152
-    Epoch 270/1000 - Training Loss: 0.0086 - Validation Loss: 0.1750
-    Epoch 280/1000 - Training Loss: 0.0081 - Validation Loss: 0.2155
-    Epoch 290/1000 - Training Loss: 0.0100 - Validation Loss: 0.2453
-    Epoch 300/1000 - Training Loss: 0.0134 - Validation Loss: 0.1988
-    Epoch 310/1000 - Training Loss: 0.0067 - Validation Loss: 0.1757
-    Epoch 320/1000 - Training Loss: 0.0058 - Validation Loss: 0.2490
-    Epoch 330/1000 - Training Loss: 0.0056 - Validation Loss: 0.1926
-    Epoch 340/1000 - Training Loss: 0.0068 - Validation Loss: 0.2272
-    Epoch 350/1000 - Training Loss: 0.0058 - Validation Loss: 0.1858
-    Epoch 360/1000 - Training Loss: 0.0064 - Validation Loss: 0.2075
-    Epoch 370/1000 - Training Loss: 0.0089 - Validation Loss: 0.2241
-    Epoch 380/1000 - Training Loss: 0.0085 - Validation Loss: 0.2112
-    Epoch 390/1000 - Training Loss: 0.0083 - Validation Loss: 0.2216
-    Epoch 400/1000 - Training Loss: 0.0041 - Validation Loss: 0.2240
-    Epoch 410/1000 - Training Loss: 0.0038 - Validation Loss: 0.2278
-    Epoch 420/1000 - Training Loss: 0.0068 - Validation Loss: 0.2677
-    Epoch 430/1000 - Training Loss: 0.0038 - Validation Loss: 0.2344
-    Epoch 440/1000 - Training Loss: 0.0034 - Validation Loss: 0.2317
-    Epoch 450/1000 - Training Loss: 0.0362 - Validation Loss: 0.1513
-    Epoch 460/1000 - Training Loss: 0.0029 - Validation Loss: 0.2609
-    Epoch 470/1000 - Training Loss: 0.0062 - Validation Loss: 0.2417
-    Epoch 480/1000 - Training Loss: 0.0028 - Validation Loss: 0.2765
-    Epoch 490/1000 - Training Loss: 0.0028 - Validation Loss: 0.2983
-    Epoch 500/1000 - Training Loss: 0.0047 - Validation Loss: 0.2537
-    Epoch 510/1000 - Training Loss: 0.0035 - Validation Loss: 0.2963
-    Epoch 520/1000 - Training Loss: 0.0043 - Validation Loss: 0.2989
-    Epoch 530/1000 - Training Loss: 0.0030 - Validation Loss: 0.2697
-    Epoch 540/1000 - Training Loss: 0.0036 - Validation Loss: 0.2756
-    Epoch 550/1000 - Training Loss: 0.0020 - Validation Loss: 0.2972
-    Epoch 560/1000 - Training Loss: 0.0019 - Validation Loss: 0.2552
-    Epoch 570/1000 - Training Loss: 0.0016 - Validation Loss: 0.2601
-    Epoch 580/1000 - Training Loss: 0.0015 - Validation Loss: 0.2899
-    Epoch 590/1000 - Training Loss: 0.0016 - Validation Loss: 0.2940
-    Epoch 600/1000 - Training Loss: 0.0015 - Validation Loss: 0.3159
-    Epoch 610/1000 - Training Loss: 0.0014 - Validation Loss: 0.2606
-    Epoch 620/1000 - Training Loss: 0.0020 - Validation Loss: 0.3271
-    Epoch 630/1000 - Training Loss: 0.0015 - Validation Loss: 0.3110
-    Epoch 640/1000 - Training Loss: 0.0016 - Validation Loss: 0.3255
-    Epoch 650/1000 - Training Loss: 0.0017 - Validation Loss: 0.2710
-    Epoch 660/1000 - Training Loss: 0.0011 - Validation Loss: 0.3438
-    Epoch 670/1000 - Training Loss: 0.0015 - Validation Loss: 0.2984
-    Epoch 680/1000 - Training Loss: 0.0010 - Validation Loss: 0.3257
-    Epoch 690/1000 - Training Loss: 0.0010 - Validation Loss: 0.3364
-    Epoch 700/1000 - Training Loss: 0.0010 - Validation Loss: 0.3370
-    Epoch 710/1000 - Training Loss: 0.0012 - Validation Loss: 0.3105
-    Epoch 720/1000 - Training Loss: 0.0008 - Validation Loss: 0.3331
-    Epoch 730/1000 - Training Loss: 0.0008 - Validation Loss: 0.3420
-    Epoch 740/1000 - Training Loss: 0.0010 - Validation Loss: 0.3397
-    Epoch 750/1000 - Training Loss: 0.0007 - Validation Loss: 0.3481
-    Epoch 760/1000 - Training Loss: 0.0013 - Validation Loss: 0.4577
-    Epoch 770/1000 - Training Loss: 0.0038 - Validation Loss: 0.3381
-    Epoch 780/1000 - Training Loss: 0.0007 - Validation Loss: 0.4575
-    Epoch 790/1000 - Training Loss: 0.0006 - Validation Loss: 0.3666
-    Epoch 800/1000 - Training Loss: 0.0005 - Validation Loss: 0.3633
-    Epoch 810/1000 - Training Loss: 0.0011 - Validation Loss: 0.4677
-    Epoch 820/1000 - Training Loss: 0.0006 - Validation Loss: 0.3536
-    Epoch 830/1000 - Training Loss: 0.0005 - Validation Loss: 0.3984
-    Epoch 840/1000 - Training Loss: 0.0007 - Validation Loss: 0.4062
-    Epoch 850/1000 - Training Loss: 0.0009 - Validation Loss: 0.3149
-    Epoch 860/1000 - Training Loss: 0.0007 - Validation Loss: 0.3344
-    Epoch 870/1000 - Training Loss: 0.0004 - Validation Loss: 0.4071
-    Epoch 880/1000 - Training Loss: 0.0023 - Validation Loss: 0.3755
-    Epoch 890/1000 - Training Loss: 0.0015 - Validation Loss: 0.4427
-    Epoch 900/1000 - Training Loss: 0.0006 - Validation Loss: 0.3808
-    Epoch 910/1000 - Training Loss: 0.0009 - Validation Loss: 0.4153
-    Epoch 920/1000 - Training Loss: 0.0005 - Validation Loss: 0.4512
-    Epoch 930/1000 - Training Loss: 0.0005 - Validation Loss: 0.4253
-    Epoch 940/1000 - Training Loss: 0.0006 - Validation Loss: 0.4027
-    Epoch 950/1000 - Training Loss: 0.0003 - Validation Loss: 0.4134
-    Epoch 960/1000 - Training Loss: 0.0003 - Validation Loss: 0.4516
-    Epoch 970/1000 - Training Loss: 0.0004 - Validation Loss: 0.4076
-    Epoch 980/1000 - Training Loss: 0.0006 - Validation Loss: 0.4151
-    Epoch 990/1000 - Training Loss: 0.0013 - Validation Loss: 0.4861
-    ------------------------------
-    Best Validation Loss: 0.1256
-    Model Weights Saved: 'iris_model.pth'
-
-
-## Evaluate Model
+### Evaluation Functions
 
 
 ```python
-model.eval()
+def _accumulate_batch(y_true, y_pred, y_probs, logits, y_batch):
+    """
+    Accumulate predictions and probabilities from a single batch.
+
+    Parameters:
+        y_true (list): Accumulator for true labels.
+        y_pred (list): Accumulator for predicted labels.
+        y_probs (list): Accumulator for class probabilities.
+        logits (torch.Tensor): Raw model output.
+        y_batch (torch.Tensor): True label batch.
+    """
+    y_true.extend(y_batch.cpu().numpy())
+    y_pred.extend(logits.argmax(dim=1).cpu().numpy())
+    y_probs.extend(F.softmax(logits, dim=1).cpu().numpy())
+
+
+def collect_predictions(model, loader):
+    """
+    Collect all predictions, true labels, and probabilities from a loader.
+
+    Parameters:
+        model (nn.Module): Trained model.
+        loader (DataLoader): Data loader to iterate over.
+
+    Returns:
+        tuple: (y_true, y_pred, y_probs) as numpy arrays.
+    """
+    y_true, y_pred, y_probs = [], [], []
+    model.eval()
+    with torch.no_grad():
+        for X_batch, y_batch in loader:
+            _accumulate_batch(y_true, y_pred, y_probs, model(X_batch), y_batch)
+    return np.array(y_true), np.array(y_pred), np.array(y_probs)
 ```
 
+### Visualization Functions
 
 
+```python
+def _draw_pie(ax, accuracy, title):
+    """
+    Draw a single accuracy pie chart on the given axis.
 
-    Model(
-      (fc1): Linear(in_features=6, out_features=8, bias=True)
-      (fc2): Linear(in_features=8, out_features=8, bias=True)
-      (out): Linear(in_features=8, out_features=3, bias=True)
-      (dropout): Dropout(p=0.0, inplace=False)
+    Parameters:
+        ax (matplotlib.axes.Axes): Target axis.
+        accuracy (float): Accuracy value (0 to 1).
+        title (str): Chart title.
+    """
+    colors = ["#00FF00", "#FF0000"]
+    ax.pie(
+        [accuracy, 1 - accuracy],
+        labels=["Correct", "Incorrect"],
+        autopct="%1.1f%%",
+        colors=colors,
+        startangle=90,
+        explode=(0.1, 0),
     )
+    ax.set_title(title)
 
 
+def plot_accuracy_pies(train_acc, test_acc):
+    """
+    Display training and test accuracy as side-by-side pie charts.
+
+    Parameters:
+        train_acc (float): Training accuracy.
+        test_acc (float): Test accuracy.
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+    _draw_pie(ax1, train_acc, "Training Accuracy")
+    _draw_pie(ax2, test_acc, "Test Accuracy")
+    plt.tight_layout()
+    plt.show()
 
 
-```python
-total_val_loss = 0.0
-total_val_loss
-```
+def plot_confusion_matrix(y_true, y_pred, class_names):
+    """
+    Display confusion matrix as a heatmap.
 
-
-
-
-    0.0
-
-
-
-
-```python
-with torch.no_grad():
-    for X_batch, y_batch in test_loader:
-        y_eval = model(X_batch)
-        total_val_loss += criterion(y_eval, y_batch).item()
-val_loss = total_val_loss / len(test_loader)
-val_loss
-```
-
-
-
-
-    0.40907131135463715
-
-
-
-### Model Accuracy & Loss
-
-
-```python
-# Evaluate the trained model using standard classification accuracy
-model.eval()
-train_correct = 0
-train_total = 0
-test_correct = 0
-test_total = 0
-with torch.no_grad():
-    for X_batch, y_batch in train_loader:
-        preds = model(X_batch).argmax(dim=1)
-        train_correct += (preds == y_batch).sum().item()
-        train_total += len(y_batch)
-    for X_batch, y_batch in test_loader:
-        preds = model(X_batch).argmax(dim=1)
-        test_correct += (preds == y_batch).sum().item()
-        test_total += len(y_batch)
-train_acc = train_correct / train_total
-test_acc = test_correct / test_total
-print(f"Train Accuracy: {train_acc:.4f} ({train_correct}/{train_total})")
-print(f"Test Accuracy: {test_acc:.4f} ({test_correct}/{test_total})")
-print(f"Training Loss: {train_loss:.4f}")
-print(f"Validation Loss: {val_loss:.4f}")
-```
-
-    Train Accuracy: 1.0000 (105/105)
-    Test Accuracy: 0.9111 (41/45)
-    Training Loss: 0.0004
-    Validation Loss: 0.4091
-
-
-### Model Correct vs Incorrect Predictions
-
-
-```python
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
-colors = ["#00FF00", "#FF0000"]  # Green for correct, red for incorrect
-ax1.pie(
-    [train_acc, 1 - train_acc],
-    labels=["Correct", "Incorrect"],
-    autopct="%1.1f%%",
-    colors=colors,
-    startangle=90,
-    explode=(0.1, 0),
-)
-ax1.set_title("Training Accuracy")
-ax2.pie(
-    [test_acc, 1 - test_acc],
-    labels=["Correct", "Incorrect"],
-    autopct="%1.1f%%",
-    colors=colors,
-    startangle=90,
-    explode=(0.1, 0),
-)
-ax2.set_title("Test Accuracy")
-plt.tight_layout()
-plt.show()
-```
-
-
-    
-![png](README_files/I-MLP_141_0.png)
-    
-
-
-### Model Confusion Matrix
-
-
-```python
-y_true = []
-y_pred = []
-model.eval()
-with torch.no_grad():
-    for X_batch, y_batch in test_loader:
-        # Get raw scores
-        outputs = model(X_batch)
-        # Convert raw scores to class index (0, 1, or 2)
-        _, predicted = torch.max(outputs, 1)
-        # Store results
-        y_true.extend(y_batch.cpu().numpy())
-        y_pred.extend(predicted.cpu().numpy())
-cm = confusion_matrix(y_true, y_pred)
-plt.figure(figsize=(8, 6))
-sns.heatmap(
-    cm,
-    annot=True,
-    fmt="d",
-    cmap="Blues",
-    xticklabels=["Setosa", "Versicolor", "Virginica"],
-    yticklabels=["Setosa", "Versicolor", "Virginica"],
-)
-plt.xlabel("Predicted Label")
-plt.ylabel("Actual Label")
-plt.title("Confusion Matrix: Where did the model fail?")
-plt.show()
-```
-
-
-    
-![png](README_files/I-MLP_143_0.png)
-    
-
-
-### Model Training vs Validation Over Epochs
-
-
-```python
-plt.figure(figsize=(10, 6))
-plt.plot(range(len(train_losses)), train_losses, label="Training Loss")
-plt.plot(range(len(val_losses)), val_losses, label="Validation Loss")
-plt.xlabel("Epochs")
-plt.ylabel("Loss")
-plt.title("Training and Validation Loss Over Epochs")
-plt.legend()
-plt.show()
-```
-
-
-    
-![png](README_files/I-MLP_145_0.png)
-    
-
-
-### Model Classification Report
-
-
-```python
-print(
-    classification_report(
-        y_true, y_pred, target_names=["Setosa", "Versicolor", "Virginica"]
+    Parameters:
+        y_true (array): True labels.
+        y_pred (array): Predicted labels.
+        class_names (list): Human-readable class names.
+    """
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        xticklabels=class_names,
+        yticklabels=class_names,
     )
+    plt.xlabel("Predicted Label")
+    plt.ylabel("Actual Label")
+    plt.title("Confusion Matrix")
+    plt.show()
+
+
+def plot_loss_curves(train_losses, val_losses):
+    """
+    Plot training and validation loss curves over epochs.
+
+    Parameters:
+        train_losses (list): Training loss per epoch.
+        val_losses (list): Validation loss per epoch.
+    """
+    plt.figure(figsize=(10, 6))
+    plt.plot(range(len(train_losses)), train_losses, label="Training Loss")
+    plt.plot(range(len(val_losses)), val_losses, label="Validation Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.title("Training and Validation Loss Over Epochs")
+    plt.legend()
+    plt.show()
+```
+
+### ROC & Metrics Functions
+
+
+```python
+def _plot_class_roc(ax, y_true, y_probs, class_idx, class_name, color):
+    """
+    Plot ROC curve for a single class on the given axes.
+
+    Parameters:
+        ax (matplotlib.axes.Axes): Target axis.
+        y_true (array): True labels.
+        y_probs (array): Class probabilities.
+        class_idx (int): Class index for OVR.
+        class_name (str): Human-readable class name.
+        color (str): Line color.
+    """
+    y_binary = (np.array(y_true) == class_idx).astype(int)
+    fpr, tpr, _ = roc_curve(y_binary, y_probs[:, class_idx])
+    class_auc = auc(fpr, tpr)
+    ax.plot(fpr, tpr, color=color, lw=2, label=f"{class_name} (AUC = {class_auc:.4f})")
+
+
+def _format_roc_axes(ax, overall_auc):
+    """
+    Configure ROC plot axes and formatting.
+
+    Parameters:
+        ax (matplotlib.axes.Axes): Target axis.
+        overall_auc (float): Overall AUC score.
+    """
+    ax.plot([0, 1], [0, 1], "k--", label="Random (AUC = 0.50)")
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.set_title(f"Multi-Class ROC Curve (Overall AUC = {overall_auc:.4f})")
+    ax.legend(loc="lower right")
+    ax.grid(alpha=0.3)
+
+
+def plot_roc_curves(y_true, y_probs, class_names):
+    """
+    Plot multi-class ROC curves with per-class and overall AUC.
+
+    Parameters:
+        y_true (array): True labels.
+        y_probs (array): Predicted probabilities (n_samples, n_classes).
+        class_names (list): Human-readable class names.
+    """
+    colors = ["red", "green", "blue"]
+    overall_auc = roc_auc_score(y_true, y_probs, multi_class="ovr")
+    fig, ax = plt.subplots(figsize=(10, 8))
+    for idx, name in enumerate(class_names):
+        _plot_class_roc(ax, y_true, y_probs, idx, name, colors[idx])
+    _format_roc_axes(ax, overall_auc)
+    plt.tight_layout()
+    plt.show()
+
+
+def _compute_all_metrics(y_true, y_pred, y_probs):
+    """
+    Compute all classification metrics and return as dict.
+
+    Parameters:
+        y_true (array): True labels.
+        y_pred (array): Predicted labels.
+        y_probs (array): Class probabilities.
+
+    Returns:
+        dict: Metric names mapped to scores.
+    """
+    acc = accuracy_score(y_true, y_pred)
+    prec, rec, f1, _ = precision_recall_fscore_support(
+        y_true, y_pred, average="weighted"
+    )
+    auc_val = roc_auc_score(y_true, y_probs, multi_class="ovr")
+    return {
+        "Accuracy": acc,
+        "Precision": prec,
+        "Recall": rec,
+        "F1-Score": f1,
+        "ROC AUC": auc_val,
+    }
+
+
+def _metric_descriptions():
+    """
+    Return descriptions for each classification metric.
+
+    Returns:
+        dict: Metric names mapped to description strings.
+    """
+    return {
+        "Accuracy": "Overall correctness (caution: misleading if imbalanced)",
+        "Precision": "When predicting positive, how often correct?",
+        "Recall": "Of all actual positives, how many found?",
+        "F1-Score": "Harmonic mean of Precision & Recall",
+        "ROC AUC": "Class separability (1.0 = perfect)",
+    }
+
+
+def print_summary_metrics(y_true, y_pred, y_probs):
+    """
+    Print formatted classification metrics table.
+
+    Parameters:
+        y_true (array): True labels.
+        y_pred (array): Predicted labels.
+        y_probs (array): Class probabilities.
+    """
+    metrics = _compute_all_metrics(y_true, y_pred, y_probs)
+    descs = _metric_descriptions()
+    print("-" * 90)
+    print(f"{'METRIC':<15} {'SCORE':<10} {'DESCRIPTION'}")
+    print("-" * 90)
+    for name, score in metrics.items():
+        print(f"{name:<15} {score:.4f}     {descs[name]}")
+    print("-" * 90)
+```
+
+### SHAP Functions
+
+
+```python
+def _create_predict_fn(model, device):
+    """
+    Create a SHAP-compatible prediction function from a PyTorch model.
+
+    Parameters:
+        model (nn.Module): Trained PyTorch model.
+        device (torch.device): Computing device.
+
+    Returns:
+        callable: Function mapping numpy arrays to softmax probabilities.
+    """
+
+    def predict_fn(data_numpy):
+        """Convert numpy input to softmax probabilities via the model."""
+        tensor = torch.tensor(data_numpy).float().to(device)
+        model.eval()
+        with torch.no_grad():
+            return F.softmax(model(tensor), dim=1).cpu().numpy()
+
+    return predict_fn
+
+
+def _build_shap_explainer(model, X_train_scaled, device, n_background=100):
+    """
+    Build SHAP KernelExplainer with summarized training background.
+
+    Parameters:
+        model (nn.Module): Trained model.
+        X_train_scaled (pd.DataFrame): Scaled training features.
+        device (torch.device): Computing device.
+        n_background (int): Number of background samples for KernelExplainer.
+
+    Returns:
+        shap.KernelExplainer: Configured SHAP explainer.
+    """
+    predict_fn = _create_predict_fn(model, device)
+    n_unique = len(np.unique(X_train_scaled.values, axis=0))
+    background = shap.kmeans(X_train_scaled.values, min(n_background, n_unique))
+    return shap.KernelExplainer(predict_fn, background)
+
+
+def run_shap_analysis(model, X_train_scaled, X_test_scaled, class_names, device):
+    """
+    Run SHAP analysis and display global feature importance bar plot.
+
+    Parameters:
+        model (nn.Module): Trained model.
+        X_train_scaled (pd.DataFrame): Scaled training features.
+        X_test_scaled (pd.DataFrame): Scaled test features.
+        class_names (list): Human-readable class names.
+        device (torch.device): Computing device.
+    """
+    explainer = _build_shap_explainer(model, X_train_scaled, device)
+    shap_values = explainer.shap_values(X_test_scaled.values)
+    plt.figure(figsize=(10, 5))
+    shap.summary_plot(
+        shap_values, X_test_scaled, class_names=class_names, plot_type="bar", show=False
+    )
+    plt.xlabel("Average Absolute SHAP Value (Feature Importance)")
+    plt.tight_layout()
+    plt.show()
+```
+
+### Inference Functions
+
+
+```python
+def _prepare_input_tensor(features, device):
+    """
+    Prepare input features as a tensor on the specified device.
+
+    Parameters:
+        features (list[float]): Feature values.
+        device (torch.device): Target device.
+
+    Returns:
+        torch.Tensor: Input tensor with shape (1, n_features).
+    """
+    X_new = torch.tensor(features).float().to(device)
+    if X_new.dim() == 1:
+        X_new = X_new.unsqueeze(0)
+    return X_new
+
+
+def _get_prediction_details(logits):
+    """
+    Extract predicted class and confidence from logits.
+
+    Parameters:
+        logits (torch.Tensor): Raw model output.
+
+    Returns:
+        tuple: (predicted_class_index, confidence_score).
+    """
+    probabilities = torch.softmax(logits, dim=1)
+    predicted_class = logits.argmax(dim=1).item()
+    confidence = probabilities[0][predicted_class].item()
+    return predicted_class, confidence
+
+
+def predict(model, features, species_map, device):
+    """
+    Make a prediction on new data.
+
+    Parameters:
+        model (nn.Module): Trained model.
+        features (list[float]): Feature values (pre-scaled).
+        species_map (dict): Mapping of class index to name.
+        device (torch.device): Target device.
+
+    Returns:
+        tuple: (class_name, confidence_score).
+    """
+    model.eval()
+    with torch.no_grad():
+        X_new = _prepare_input_tensor(features, device)
+        logits = model(X_new)
+        pred_class, confidence = _get_prediction_details(logits)
+        return species_map[pred_class], confidence
+```
+
+## Full-Feature Model (6 Features)
+
+### Data Preparation & Training
+
+
+```python
+# Prepare data using all features (train/val/test from early split)
+X_tr_full, X_val_full, X_te_full, y_tr_full, y_val_full, y_te_full, scaler_full = (
+    prepare_data(df_train, df_test, features, TARGET_VAR, VAL_SIZE, SEED)
 )
+train_loader_full, val_loader_full, test_loader_full = create_loaders(
+    X_tr_full,
+    X_val_full,
+    X_te_full,
+    y_tr_full,
+    y_val_full,
+    y_te_full,
+    DEVICE,
+    BATCH_SIZE,
+)
+print(f"Features ({len(features)}): {features}")
+print(f"Train: {len(y_tr_full)}, Val: {len(y_val_full)}, Test: {len(y_te_full)}")
+```
+
+    Features (6): ['sepal_length', 'sepal_width', 'petal_length', 'petal_width', 'petal_shape', 'sepal_dominance']
+    Train: 89, Val: 16, Test: 45
+
+
+
+```python
+# Create and train the full-feature model
+model_full = IrisMLP(
+    in_features=len(features), h1=H1, h2=H2, out_features=OUT_FEATURES, dropout=DROPOUT
+).to(DEVICE)
+class_weights_full = _compute_class_weights(y_tr_full, DEVICE)
+criterion = nn.CrossEntropyLoss(weight=class_weights_full)
+optimizer = torch.optim.AdamW(model_full.parameters(), lr=LR)
+full_config = {
+    "epochs": EPOCHS,
+    "log_interval": LOG_INTERVAL,
+    "save_path": "iris_model_full.pth",
+    "patience": PATIENCE,
+}
+train_losses_full, val_losses_full, best_full = train_model(
+    model_full, train_loader_full, val_loader_full, criterion, optimizer, full_config
+)
+print(f"\nBest Validation Loss: {best_full:.4f}")
+```
+
+    Epoch 0/1000 - Train: 1.1338 - Val: 1.0963
+    Epoch 10/1000 - Train: 0.5337 - Val: 0.5446
+    Epoch 20/1000 - Train: 0.4015 - Val: 0.3771
+    Epoch 30/1000 - Train: 0.2559 - Val: 0.2179
+    Epoch 40/1000 - Train: 0.1581 - Val: 0.1224
+    Epoch 50/1000 - Train: 0.1134 - Val: 0.0760
+    Epoch 60/1000 - Train: 0.0916 - Val: 0.0513
+    Epoch 70/1000 - Train: 0.0798 - Val: 0.0355
+    Epoch 80/1000 - Train: 0.0703 - Val: 0.0286
+    Epoch 90/1000 - Train: 0.0418 - Val: 0.0159
+    Epoch 100/1000 - Train: 0.0299 - Val: 0.0082
+    Epoch 110/1000 - Train: 0.0236 - Val: 0.0056
+    Epoch 120/1000 - Train: 0.0210 - Val: 0.0042
+    Epoch 130/1000 - Train: 0.0201 - Val: 0.0033
+    Epoch 140/1000 - Train: 0.0203 - Val: 0.0026
+    Epoch 150/1000 - Train: 0.0152 - Val: 0.0023
+    Epoch 160/1000 - Train: 0.0136 - Val: 0.0019
+    Epoch 170/1000 - Train: 0.0179 - Val: 0.0016
+    Epoch 180/1000 - Train: 0.0138 - Val: 0.0014
+    Epoch 190/1000 - Train: 0.0113 - Val: 0.0013
+    Epoch 200/1000 - Train: 0.0120 - Val: 0.0012
+    Epoch 210/1000 - Train: 0.0090 - Val: 0.0010
+    Epoch 220/1000 - Train: 0.0081 - Val: 0.0009
+    Epoch 230/1000 - Train: 0.0077 - Val: 0.0008
+    Epoch 240/1000 - Train: 0.0084 - Val: 0.0007
+    Epoch 250/1000 - Train: 0.0068 - Val: 0.0006
+    Epoch 260/1000 - Train: 0.0062 - Val: 0.0006
+    Epoch 270/1000 - Train: 0.0061 - Val: 0.0005
+    Epoch 280/1000 - Train: 0.0058 - Val: 0.0005
+    Epoch 290/1000 - Train: 0.0056 - Val: 0.0004
+    Epoch 300/1000 - Train: 0.0055 - Val: 0.0004
+    Epoch 310/1000 - Train: 0.0046 - Val: 0.0004
+    Epoch 320/1000 - Train: 0.0053 - Val: 0.0003
+    Epoch 330/1000 - Train: 0.0052 - Val: 0.0003
+    Epoch 340/1000 - Train: 0.0040 - Val: 0.0003
+    Epoch 350/1000 - Train: 0.0036 - Val: 0.0003
+    Epoch 360/1000 - Train: 0.0034 - Val: 0.0003
+    Epoch 370/1000 - Train: 0.0032 - Val: 0.0002
+    Epoch 380/1000 - Train: 0.0033 - Val: 0.0002
+    Epoch 390/1000 - Train: 0.0031 - Val: 0.0002
+    Epoch 400/1000 - Train: 0.0035 - Val: 0.0002
+    Epoch 410/1000 - Train: 0.0028 - Val: 0.0002
+    Epoch 420/1000 - Train: 0.0025 - Val: 0.0002
+    Epoch 430/1000 - Train: 0.0031 - Val: 0.0002
+    Epoch 440/1000 - Train: 0.0027 - Val: 0.0002
+    Epoch 450/1000 - Train: 0.0027 - Val: 0.0001
+    Epoch 460/1000 - Train: 0.0025 - Val: 0.0001
+    Epoch 470/1000 - Train: 0.0022 - Val: 0.0001
+    Epoch 480/1000 - Train: 0.0022 - Val: 0.0001
+    Epoch 490/1000 - Train: 0.0022 - Val: 0.0001
+    Epoch 500/1000 - Train: 0.0018 - Val: 0.0001
+    Epoch 510/1000 - Train: 0.0018 - Val: 0.0001
+    Epoch 520/1000 - Train: 0.0017 - Val: 0.0001
+    Epoch 530/1000 - Train: 0.0018 - Val: 0.0001
+    Epoch 540/1000 - Train: 0.0016 - Val: 0.0001
+    Epoch 550/1000 - Train: 0.0017 - Val: 0.0001
+    Epoch 560/1000 - Train: 0.0018 - Val: 0.0001
+    Epoch 570/1000 - Train: 0.0018 - Val: 0.0001
+    Epoch 580/1000 - Train: 0.0014 - Val: 0.0001
+    Epoch 590/1000 - Train: 0.0015 - Val: 0.0001
+    Epoch 600/1000 - Train: 0.0014 - Val: 0.0001
+    Epoch 610/1000 - Train: 0.0015 - Val: 0.0001
+    Epoch 620/1000 - Train: 0.0013 - Val: 0.0001
+    Epoch 630/1000 - Train: 0.0015 - Val: 0.0001
+    Epoch 640/1000 - Train: 0.0011 - Val: 0.0001
+    Epoch 650/1000 - Train: 0.0013 - Val: 0.0001
+    Epoch 660/1000 - Train: 0.0010 - Val: 0.0001
+    Epoch 670/1000 - Train: 0.0011 - Val: 0.0001
+    Epoch 680/1000 - Train: 0.0010 - Val: 0.0001
+    Epoch 690/1000 - Train: 0.0012 - Val: 0.0001
+    Epoch 700/1000 - Train: 0.0011 - Val: 0.0001
+    Epoch 710/1000 - Train: 0.0011 - Val: 0.0001
+    Epoch 720/1000 - Train: 0.0011 - Val: 0.0001
+    Epoch 730/1000 - Train: 0.0008 - Val: 0.0001
+    Epoch 740/1000 - Train: 0.0009 - Val: 0.0001
+    Epoch 750/1000 - Train: 0.0008 - Val: 0.0001
+    Early stopping at epoch 759 (patience=50)
+    
+    Best Validation Loss: 0.0001
+
+
+### Evaluate Full-Feature Model
+
+
+```python
+# Collect predictions and compute accuracy
+y_true_full, y_pred_full, y_probs_full = collect_predictions(
+    model_full, test_loader_full
+)
+train_acc_full = accuracy_score(*collect_predictions(model_full, train_loader_full)[:2])
+val_acc_full = accuracy_score(*collect_predictions(model_full, val_loader_full)[:2])
+test_acc_full = accuracy_score(y_true_full, y_pred_full)
+print(f"Train Accuracy: {train_acc_full:.4f}")
+print(f"Val Accuracy:   {val_acc_full:.4f}")
+print(f"Test Accuracy:  {test_acc_full:.4f}")
+```
+
+    Train Accuracy: 1.0000
+    Val Accuracy:   1.0000
+    Test Accuracy:  0.9111
+
+
+
+```python
+plot_accuracy_pies(train_acc_full, test_acc_full)
+```
+
+
+    
+![png](README_files/I-MLP_149_0.png)
+    
+
+
+
+```python
+plot_confusion_matrix(y_true_full, y_pred_full, CLASS_NAMES)
+```
+
+
+    
+![png](README_files/I-MLP_150_0.png)
+    
+
+
+
+```python
+plot_loss_curves(train_losses_full, val_losses_full)
+```
+
+
+    
+![png](README_files/I-MLP_151_0.png)
+    
+
+
+
+```python
+print(classification_report(y_true_full, y_pred_full, target_names=CLASS_NAMES))
 ```
 
                   precision    recall  f1-score   support
@@ -3088,1304 +4059,184 @@ print(
     
 
 
-### ROC Curve
-
 
 ```python
-y_probs = []
-y_true = []
-model.eval()
-with torch.no_grad():
-    for X_batch, y_batch in test_loader:
-        # Get Logits (Raw scores)
-        logits = model(X_batch)
-        # Apply Softmax to get Probabilities (0.0 to 1.0)
-        probs = F.softmax(logits, dim=1)
-        # Store results
-        y_probs.extend(probs.cpu().numpy())
-        y_true.extend(y_batch.cpu().numpy())
-# Convert to numpy array for Scikit-Learn
-y_probs = np.array(y_probs)
-y_probs
+plot_roc_curves(y_true_full, y_probs_full, CLASS_NAMES)
 ```
-
-
-
-
-    array([[4.00236502e-07, 9.23978775e-13, 9.99999642e-01],
-           [2.40762715e-10, 1.00000000e+00, 1.50147212e-12],
-           [5.48361498e-08, 9.99999881e-01, 3.61525174e-08],
-           [2.02431183e-09, 1.00000000e+00, 3.18816293e-11],
-           [1.69060449e-03, 2.99355835e-01, 6.98953509e-01],
-           [6.71739713e-08, 2.85304623e-19, 9.99999881e-01],
-           [8.65986449e-11, 1.00000000e+00, 4.84566272e-13],
-           [1.43261696e-11, 1.00000000e+00, 1.24462030e-14],
-           [9.99951601e-01, 4.64147306e-05, 1.99366923e-06],
-           [9.49466198e-07, 1.72834932e-13, 9.99999046e-01],
-           [9.99944806e-01, 5.50656841e-05, 1.50928585e-07],
-           [9.99991536e-01, 2.58665114e-06, 5.78872823e-06],
-           [4.55345344e-07, 1.01208592e-12, 9.99999523e-01],
-           [9.40001264e-05, 3.79033554e-05, 9.99868035e-01],
-           [9.99977827e-01, 2.09149839e-05, 1.28188844e-06],
-           [9.23006974e-06, 2.72550840e-12, 9.99990821e-01],
-           [6.61744270e-12, 1.00000000e+00, 7.42702840e-17],
-           [9.99982357e-01, 1.69110590e-05, 7.02498482e-07],
-           [9.99942780e-01, 4.43843055e-06, 5.28379969e-05],
-           [9.99971747e-01, 2.66712595e-05, 1.57756585e-06],
-           [5.07460428e-11, 1.00000000e+00, 1.67521040e-13],
-           [9.99989629e-01, 8.36814706e-06, 2.03544437e-06],
-           [4.00417199e-11, 1.00000000e+00, 1.57630988e-13],
-           [1.37123536e-07, 1.37700475e-17, 9.99999881e-01],
-           [8.07588862e-04, 9.19186771e-01, 8.00056159e-02],
-           [4.22674229e-10, 1.00000000e+00, 4.54775887e-12],
-           [7.53199814e-09, 1.00000000e+00, 1.26870126e-10],
-           [5.43597285e-12, 1.00000000e+00, 1.81519108e-16],
-           [3.83821730e-09, 1.00000000e+00, 6.14661100e-11],
-           [9.99979734e-01, 1.86589023e-05, 1.53225585e-06],
-           [3.75950942e-04, 8.75587761e-01, 1.24036238e-01],
-           [8.32418436e-08, 4.59447669e-18, 9.99999881e-01],
-           [5.61736968e-09, 1.00000000e+00, 7.39471054e-11],
-           [9.99985695e-01, 1.23112677e-05, 1.97730878e-06],
-           [2.40175791e-06, 1.34332379e-10, 9.99997616e-01],
-           [9.99993443e-01, 3.93315440e-06, 2.63854599e-06],
-           [9.99994755e-01, 1.26822783e-06, 3.90340392e-06],
-           [9.99992490e-01, 4.79282198e-06, 2.73820638e-06],
-           [9.99257028e-01, 8.33045997e-05, 6.59669342e-04],
-           [1.28707034e-04, 9.80775952e-01, 1.90953929e-02],
-           [2.54852056e-10, 1.00000000e+00, 1.03750320e-12],
-           [9.99998450e-01, 8.08664822e-07, 7.11288521e-07],
-           [2.05464382e-03, 8.02935719e-01, 1.95009649e-01],
-           [1.09242355e-05, 7.37339789e-09, 9.99989033e-01],
-           [1.87699318e-11, 1.00000000e+00, 7.09114909e-14]], dtype=float32)
-
-
-
-
-```python
-final_auc_score = roc_auc_score(y_true, y_probs, multi_class="ovr")
-final_auc_score
-```
-
-
-
-
-    0.9874074074074075
-
-
-
-
-```python
-final_auc_score = roc_auc_score(y_true, y_probs, multi_class="ovr")
-print(f"Overall ROC AUC Score: {final_auc_score:.4f}")
-colors = ["red", "green", "blue"]
-plt.figure(figsize=(10, 8))
-for class_label in range(len(TARGET_VARS)):
-    # Create binary target for this specific class (One-vs-Rest)
-    y_true_binary = (np.array(y_true) == class_label).astype(int)
-    # Get the curve points
-    fpr, tpr, _ = roc_curve(y_true_binary, y_probs[:, class_label])
-    # Calculate AUC for this specific class
-    current_auc = auc(fpr, tpr)
-    # Plot
-    plt.plot(
-        fpr,
-        tpr,
-        color=colors[class_label],
-        lw=2,
-        label=f"{TARGET_VARS[class_label]} (AUC = {current_auc:.4f})",
-    )
-plt.plot([0, 1], [0, 1], "k--", label="Random Classifier (AUC = 0.50)")
-plt.xlabel("False Positive Rate")
-plt.ylabel("True Positive Rate")
-plt.title(f"Multi-Class ROC Curve (Overall AUC = {final_auc_score:.4f})")
-plt.legend(loc="lower right")
-plt.grid(alpha=0.3)
-plt.tight_layout()
-plt.show()
-```
-
-    Overall ROC AUC Score: 0.9874
-
 
 
     
-![png](README_files/I-MLP_151_1.png)
+![png](README_files/I-MLP_153_0.png)
     
 
 
-### Summary Metrics
-
 
 ```python
-test_accuracy = accuracy_score(y_true, y_pred)
-precision, recall, f1, _ = precision_recall_fscore_support(
-    y_true, y_pred, average="weighted"
-)
-auc_score = roc_auc_score(y_true, y_probs, multi_class="ovr")
-print("-" * 101)
-print(f"{'METRIC':<18} {'SCORE':<10} {'DESCRIPTION'}")
-print("-" * 101)
-print(
-    f"{'Accuracy':<18} {test_accuracy:.4f}     Overall correctness (caution: misleading if classes are imbalanced)"
-)
-print(
-    f"{'Precision':<18} {precision:.4f}     Trustworthiness: When it predicts 'Yes', how often is it right?"
-)
-print(
-    f"{'Recall':<18} {recall:.4f}     Coverage: Of all actual 'Yes' cases, how many did we find?"
-)
-print(
-    f"{'F1-Score':<18} {f1:.4f}     Balance: Harmonic mean of Precision & Recall (good for unequal classes)"
-)
-print(
-    f"{'ROC AUC':<18} {auc_score:.4f}     Separability: How well it distinguishes between classes (1.0 = perfect)"
-)
-print("-" * 101)
+print_summary_metrics(y_true_full, y_pred_full, y_probs_full)
 ```
 
-    -----------------------------------------------------------------------------------------------------
-    METRIC             SCORE      DESCRIPTION
-    -----------------------------------------------------------------------------------------------------
-    Accuracy           0.9111     Overall correctness (caution: misleading if classes are imbalanced)
-    Precision          0.9298     Trustworthiness: When it predicts 'Yes', how often is it right?
-    Recall             0.9111     Coverage: Of all actual 'Yes' cases, how many did we find?
-    F1-Score           0.9095     Balance: Harmonic mean of Precision & Recall (good for unequal classes)
-    ROC AUC            0.9874     Separability: How well it distinguishes between classes (1.0 = perfect)
-    -----------------------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------------
+    METRIC          SCORE      DESCRIPTION
+    ------------------------------------------------------------------------------------------
+    Accuracy        0.9111     Overall correctness (caution: misleading if imbalanced)
+    Precision       0.9298     When predicting positive, how often correct?
+    Recall          0.9111     Of all actual positives, how many found?
+    F1-Score        0.9095     Harmonic mean of Precision & Recall
+    ROC AUC         0.9970     Class separability (1.0 = perfect)
+    ------------------------------------------------------------------------------------------
 
 
-## Postprocessing
-
-### SHAP
-
-#### Create SHAP Explainer & Compute Values
+### SHAP Analysis — Full-Feature Model
 
 
 ```python
-def model_predict(data_numpy):
-    """
-    Wrapper function to make a PyTorch model compatible with SHAP Explainer.
-
-    Parameters:
-        data_numpy (np.ndarray): A 2D Numpy array of input features
-                                 with shape (n_samples, n_features).
-
-    Returns:
-        np.ndarray: A 2D Numpy array of class probabilities with shape
-                    (n_samples, n_classes). Each row sums to 1.0.
-    """
-    data_tensor = torch.tensor(data_numpy).float().to(DEVICE)
-    model.eval()
-    with torch.no_grad():
-        logits = model(data_tensor)
-        probs = F.softmax(logits, dim=1)
-    return probs.cpu().numpy()
-
-
-# We summarize the training background to 100 representative samples (speeds up calculation)
-background = shap.kmeans(X_train_scaled.values, 100)
-explainer = shap.KernelExplainer(model_predict, background)
-
-# Note: For multi-class, this returns a LIST of n arrays (one per class)
-shap_values_all = explainer.shap_values(X_test_scaled.values)
+run_shap_analysis(model_full, X_tr_full, X_te_full, CLASS_NAMES, DEVICE)
 ```
 
 
       0%|          | 0/45 [00:00<?, ?it/s]
 
 
-#### Global Explanation (Feature Importance)
+
+    
+![png](README_files/I-MLP_156_1.png)
+    
+
+
+## Lean-Feature Model (3 Features)
+
+### Data Preparation & Training
 
 
 ```python
-plt.figure(figsize=(10, 5))
-shap.summary_plot(
-    shap_values_all,
-    X_test_scaled,
-    class_names=["Setosa", "Versicolor", "Virginica"],
-    plot_type="bar",
-    show=False,
+# Select lean feature set based on discriminative score + domain knowledge
+features_lean = ["sepal_dominance", "petal_width", "petal_length"]
+X_tr_lean, X_val_lean, X_te_lean, y_tr_lean, y_val_lean, y_te_lean, scaler_lean = (
+    prepare_data(df_train, df_test, features_lean, TARGET_VAR, VAL_SIZE, SEED)
 )
-plt.xlabel("Average Absolute SHAP Value (Feature Importance)")
-plt.tight_layout()
-plt.show()
-```
-
-    /var/folders/qg/60m3b34x32gczgr10l3665300000gn/T/ipykernel_99664/2628907736.py:2: FutureWarning: The NumPy global RNG was seeded by calling `np.random.seed`. In a future version this function will no longer use the global RNG. Pass `rng` explicitly to opt-in to the new behaviour and silence this warning.
-      shap.summary_plot(
-
-
-
-    
-![png](README_files/I-MLP_159_1.png)
-    
-
-
-## New Model
-
-
-```python
-IN_FEATURES = 3
-IN_FEATURES
-```
-
-
-
-
-    3
-
-
-
-### Re-Create `Features` Variable for Audit & Modeling 
-
-
-```python
-lean_features = ["sepal_dominance", "petal_width", "petal_length"]
-lean_features
-```
-
-
-
-
-    ['sepal_dominance', 'petal_width', 'petal_length']
-
-
-
-
-```python
-class NewModel(nn.Module):
-    """
-    A feedforward neural network with two hidden layers and optional dropout.
-    """
-
-    def __init__(
-        self,
-        in_features=IN_FEATURES,
-        h1=H1,
-        h2=H2,
-        out_features=OUT_FEATURES,
-        dropout=DROPOUT,
-    ):
-        """
-        Initializes the neural network layers.
-
-        Parameters:
-            in_features (int): Number of input features.
-            h1 (int): Number of neurons in the first hidden layer.
-            h2 (int): Number of neurons in the second hidden layer.
-            out_features (int): Number of output features.
-            dropout (float): Dropout rate (0.0 = no dropout).
-
-        Returns:
-            None
-        """
-        super(NewModel, self).__init__()
-        self.fc1 = nn.Linear(in_features, h1)
-        self.fc2 = nn.Linear(h1, h2)
-        self.out = nn.Linear(h2, out_features)
-        self.dropout = nn.Dropout(p=dropout)
-
-    def forward(self, x):
-        """
-        Defines the forward pass of the neural network.
-
-        Parameters:
-            x (torch.Tensor): Input tensor.
-
-        Returns:
-            torch.Tensor: Output tensor after passing through the network.
-        """
-        x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = F.relu(self.fc2(x))
-        x = self.dropout(x)
-        x = self.out(x)
-        return x
-```
-
-### Re-Instantiate Model
-
-
-```python
-if torch.cuda.is_available():
-    DEVICE = torch.device("cuda")
-elif torch.backends.mps.is_available():
-    DEVICE = torch.device("mps")
-else:
-    DEVICE = torch.device("cpu")
-new_model = NewModel().to(DEVICE)
-new_model
-```
-
-
-
-
-    NewModel(
-      (fc1): Linear(in_features=3, out_features=8, bias=True)
-      (fc2): Linear(in_features=8, out_features=8, bias=True)
-      (out): Linear(in_features=8, out_features=3, bias=True)
-      (dropout): Dropout(p=0.0, inplace=False)
-    )
-
-
-
-
-```python
-next(new_model.parameters()).device
-```
-
-
-
-
-    device(type='mps', index=0)
-
-
-
-### Re-Train-Test Split Model
-
-
-```python
-X = df_preprocessed[lean_features].values.astype("float32")
-X
-```
-
-
-
-
-    array([[1. , 0.2, 1.4],
-           [1. , 0.2, 1.4],
-           [1. , 0.2, 1.3],
-           [1. , 0.2, 1.5],
-           [1. , 0.2, 1.4],
-           [1. , 0.4, 1.7],
-           [1. , 0.3, 1.4],
-           [1. , 0.2, 1.5],
-           [1. , 0.2, 1.4],
-           [1. , 0.1, 1.5],
-           [1. , 0.2, 1.5],
-           [1. , 0.2, 1.6],
-           [1. , 0.1, 1.4],
-           [1. , 0.1, 1.1],
-           [1. , 0.2, 1.2],
-           [1. , 0.4, 1.5],
-           [1. , 0.4, 1.3],
-           [1. , 0.3, 1.4],
-           [1. , 0.3, 1.7],
-           [1. , 0.3, 1.5],
-           [1. , 0.2, 1.7],
-           [1. , 0.4, 1.5],
-           [1. , 0.2, 1. ],
-           [1. , 0.5, 1.7],
-           [1. , 0.2, 1.9],
-           [1. , 0.2, 1.6],
-           [1. , 0.4, 1.6],
-           [1. , 0.2, 1.5],
-           [1. , 0.2, 1.4],
-           [1. , 0.2, 1.6],
-           [1. , 0.2, 1.6],
-           [1. , 0.4, 1.5],
-           [1. , 0.1, 1.5],
-           [1. , 0.2, 1.4],
-           [1. , 0.1, 1.5],
-           [1. , 0.2, 1.2],
-           [1. , 0.2, 1.3],
-           [1. , 0.1, 1.5],
-           [1. , 0.2, 1.3],
-           [1. , 0.2, 1.5],
-           [1. , 0.3, 1.3],
-           [1. , 0.3, 1.3],
-           [1. , 0.2, 1.3],
-           [1. , 0.6, 1.6],
-           [1. , 0.4, 1.9],
-           [1. , 0.3, 1.4],
-           [1. , 0.2, 1.6],
-           [1. , 0.2, 1.4],
-           [1. , 0.2, 1.5],
-           [1. , 0.2, 1.4],
-           [0. , 1.4, 4.7],
-           [0. , 1.5, 4.5],
-           [0. , 1.5, 4.9],
-           [0. , 1.3, 4. ],
-           [0. , 1.5, 4.6],
-           [0. , 1.3, 4.5],
-           [0. , 1.6, 4.7],
-           [0. , 1. , 3.3],
-           [0. , 1.3, 4.6],
-           [0. , 1.4, 3.9],
-           [0. , 1. , 3.5],
-           [0. , 1.5, 4.2],
-           [0. , 1. , 4. ],
-           [0. , 1.4, 4.7],
-           [0. , 1.3, 3.6],
-           [0. , 1.4, 4.4],
-           [0. , 1.5, 4.5],
-           [0. , 1. , 4.1],
-           [0. , 1.5, 4.5],
-           [0. , 1.1, 3.9],
-           [0. , 1.8, 4.8],
-           [0. , 1.3, 4. ],
-           [0. , 1.5, 4.9],
-           [0. , 1.2, 4.7],
-           [0. , 1.3, 4.3],
-           [0. , 1.4, 4.4],
-           [0. , 1.4, 4.8],
-           [0. , 1.7, 5. ],
-           [0. , 1.5, 4.5],
-           [0. , 1. , 3.5],
-           [0. , 1.1, 3.8],
-           [0. , 1. , 3.7],
-           [0. , 1.2, 3.9],
-           [0. , 1.6, 5.1],
-           [0. , 1.5, 4.5],
-           [0. , 1.6, 4.5],
-           [0. , 1.5, 4.7],
-           [0. , 1.3, 4.4],
-           [0. , 1.3, 4.1],
-           [0. , 1.3, 4. ],
-           [0. , 1.2, 4.4],
-           [0. , 1.4, 4.6],
-           [0. , 1.2, 4. ],
-           [0. , 1. , 3.3],
-           [0. , 1.3, 4.2],
-           [0. , 1.2, 4.2],
-           [0. , 1.3, 4.2],
-           [0. , 1.3, 4.3],
-           [0. , 1.1, 3. ],
-           [0. , 1.3, 4.1],
-           [0. , 2.5, 6. ],
-           [0. , 1.9, 5.1],
-           [0. , 2.1, 5.9],
-           [0. , 1.8, 5.6],
-           [0. , 2.2, 5.8],
-           [0. , 2.1, 6.6],
-           [0. , 1.7, 4.5],
-           [0. , 1.8, 6.3],
-           [0. , 1.8, 5.8],
-           [0. , 2.5, 6.1],
-           [0. , 2. , 5.1],
-           [0. , 1.9, 5.3],
-           [0. , 2.1, 5.5],
-           [0. , 2. , 5. ],
-           [0. , 2.4, 5.1],
-           [0. , 2.3, 5.3],
-           [0. , 1.8, 5.5],
-           [0. , 2.2, 6.7],
-           [0. , 2.3, 6.9],
-           [0. , 1.5, 5. ],
-           [0. , 2.3, 5.7],
-           [0. , 2. , 4.9],
-           [0. , 2. , 6.7],
-           [0. , 1.8, 4.9],
-           [0. , 2.1, 5.7],
-           [0. , 1.8, 6. ],
-           [0. , 1.8, 4.8],
-           [0. , 1.8, 4.9],
-           [0. , 2.1, 5.6],
-           [0. , 1.6, 5.8],
-           [0. , 1.9, 6.1],
-           [0. , 2. , 6.4],
-           [0. , 2.2, 5.6],
-           [0. , 1.5, 5.1],
-           [0. , 1.4, 5.6],
-           [0. , 2.3, 6.1],
-           [0. , 2.4, 5.6],
-           [0. , 1.8, 5.5],
-           [0. , 1.8, 4.8],
-           [0. , 2.1, 5.4],
-           [0. , 2.4, 5.6],
-           [0. , 2.3, 5.1],
-           [0. , 1.9, 5.1],
-           [0. , 2.3, 5.9],
-           [0. , 2.5, 5.7],
-           [0. , 2.3, 5.2],
-           [0. , 1.9, 5. ],
-           [0. , 2. , 5.2],
-           [0. , 2.3, 5.4],
-           [0. , 1.8, 5.1]], dtype=float32)
-
-
-
-
-```python
-y = df_preprocessed[TARGET_VAR].values.astype("int64")
-y
-```
-
-
-
-
-    array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-           0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-           0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-           1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-           1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-           2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-           2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2])
-
-
-
-
-```python
-X.shape
-```
-
-
-
-
-    (150, 3)
-
-
-
-
-```python
-y.shape
-```
-
-
-
-
-    (150,)
-
-
-
-
-```python
-train_idx, test_idx = train_test_split(
-    np.arange(len(X)), test_size=TEST_SIZE, random_state=SEED, stratify=y
+train_loader_lean, val_loader_lean, test_loader_lean = create_loaders(
+    X_tr_lean,
+    X_val_lean,
+    X_te_lean,
+    y_tr_lean,
+    y_val_lean,
+    y_te_lean,
+    DEVICE,
+    BATCH_SIZE,
 )
-X_train, X_test = X[train_idx], X[test_idx]
-y_train, y_test = y[train_idx], y[test_idx]
-len(train_idx), len(test_idx)
+print(f"Features ({len(features_lean)}): {features_lean}")
+print(f"Train: {len(y_tr_lean)}, Val: {len(y_val_lean)}, Test: {len(y_te_lean)}")
 ```
 
-
-
-
-    (105, 45)
-
+    Features (3): ['sepal_dominance', 'petal_width', 'petal_length']
+    Train: 89, Val: 16, Test: 45
 
 
 
 ```python
-X_train
-```
-
-
-
-
-    array([[0. , 1.1, 3. ],
-           [0. , 1.5, 4.5],
-           [1. , 0.3, 1.5],
-           [0. , 2.3, 5.9],
-           [0. , 1.3, 4.1],
-           [0. , 2.3, 5.2],
-           [1. , 0.1, 1.5],
-           [1. , 0.2, 1.6],
-           [1. , 0.2, 1.4],
-           [0. , 2.1, 5.9],
-           [0. , 2. , 5.1],
-           [1. , 0.2, 1.4],
-           [1. , 0.2, 1.6],
-           [0. , 1.5, 4.5],
-           [0. , 1.1, 3.8],
-           [0. , 1.8, 6. ],
-           [1. , 0.4, 1.6],
-           [1. , 0.2, 1.6],
-           [0. , 2.5, 5.7],
-           [0. , 1.8, 4.8],
-           [1. , 0.4, 1.5],
-           [0. , 1.8, 4.9],
-           [0. , 2.1, 6.6],
-           [0. , 2. , 6.7],
-           [0. , 1.2, 4.2],
-           [1. , 0.3, 1.4],
-           [1. , 0.4, 1.5],
-           [1. , 0.4, 1.3],
-           [0. , 1.5, 4.9],
-           [0. , 1.3, 4. ],
-           [1. , 0.4, 1.5],
-           [1. , 0.3, 1.4],
-           [0. , 1. , 4.1],
-           [0. , 1.3, 3.6],
-           [1. , 0.1, 1.4],
-           [1. , 0.3, 1.4],
-           [0. , 1.4, 4.4],
-           [0. , 1.9, 5. ],
-           [0. , 2. , 6.4],
-           [1. , 0.2, 1.4],
-           [0. , 2.1, 5.6],
-           [1. , 0.2, 1.4],
-           [0. , 1.5, 5. ],
-           [1. , 0.2, 1.3],
-           [0. , 2.5, 6. ],
-           [0. , 1. , 4. ],
-           [1. , 0.2, 1.9],
-           [0. , 2.3, 6.1],
-           [0. , 1.3, 4. ],
-           [0. , 2. , 5. ],
-           [0. , 1.2, 3.9],
-           [1. , 0.3, 1.3],
-           [0. , 1. , 3.7],
-           [0. , 1.8, 5.5],
-           [0. , 1.4, 4.6],
-           [0. , 1.8, 5.6],
-           [1. , 0.2, 1.5],
-           [0. , 1.3, 4.2],
-           [1. , 0.2, 1.4],
-           [0. , 1.5, 4.7],
-           [0. , 1.4, 4.8],
-           [0. , 1.4, 3.9],
-           [0. , 2.5, 6.1],
-           [0. , 1.6, 5.1],
-           [0. , 1.3, 4.3],
-           [0. , 2.4, 5.6],
-           [0. , 2. , 4.9],
-           [1. , 0.1, 1.5],
-           [0. , 2.3, 5.7],
-           [0. , 1.5, 4.6],
-           [0. , 1.3, 4.1],
-           [0. , 2.3, 6.9],
-           [1. , 0.1, 1.5],
-           [0. , 2.3, 5.3],
-           [0. , 1.8, 5.1],
-           [0. , 1.3, 4.4],
-           [1. , 0.2, 1.6],
-           [0. , 2.2, 6.7],
-           [0. , 2.1, 5.5],
-           [1. , 0.4, 1.9],
-           [1. , 0.1, 1.1],
-           [0. , 1.8, 4.8],
-           [0. , 1.6, 5.8],
-           [0. , 2.4, 5.1],
-           [1. , 0.4, 1.7],
-           [0. , 1.9, 5.1],
-           [0. , 1. , 3.5],
-           [0. , 2.1, 5.7],
-           [0. , 1.9, 6.1],
-           [1. , 0.2, 1.5],
-           [0. , 1.2, 4.7],
-           [0. , 1.2, 4.4],
-           [0. , 1.4, 4.7],
-           [0. , 1.5, 4.9],
-           [0. , 1.5, 4.2],
-           [1. , 0.2, 1.5],
-           [0. , 2.1, 5.4],
-           [0. , 1.2, 4. ],
-           [0. , 1.9, 5.1],
-           [1. , 0.2, 1.6],
-           [1. , 0.1, 1.5],
-           [0. , 1. , 3.5],
-           [1. , 0.2, 1.4],
-           [0. , 1.3, 4.2],
-           [1. , 0.2, 1.5]], dtype=float32)
-
-
-
-
-```python
-X_train.shape
-```
-
-
-
-
-    (105, 3)
-
-
-
-
-```python
-y_train
-```
-
-
-
-
-    array([1, 1, 0, 2, 1, 2, 0, 0, 0, 2, 2, 0, 0, 1, 1, 2, 0, 0, 2, 1, 0, 2,
-           2, 2, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 2, 2, 0, 2, 0, 2, 0,
-           2, 1, 0, 2, 1, 2, 1, 0, 1, 2, 1, 2, 0, 1, 0, 1, 1, 1, 2, 1, 1, 2,
-           2, 0, 2, 1, 1, 2, 0, 2, 2, 1, 0, 2, 2, 0, 0, 2, 2, 2, 0, 2, 1, 2,
-           2, 0, 1, 1, 1, 1, 1, 0, 2, 1, 2, 0, 0, 1, 0, 1, 0])
-
-
-
-
-```python
-y_train.shape
-```
-
-
-
-
-    (105,)
-
-
-
-
-```python
-X_test
-```
-
-
-
-
-    array([[0. , 1.8, 6.3],
-           [0. , 1.4, 4.7],
-           [0. , 1.5, 5.1],
-           [0. , 1.6, 4.7],
-           [0. , 1.8, 4.9],
-           [0. , 2.4, 5.6],
-           [0. , 1.3, 4. ],
-           [0. , 1.1, 3.9],
-           [1. , 0.2, 1.7],
-           [0. , 2.3, 5.1],
-           [1. , 0.2, 1.2],
-           [1. , 0.2, 1.3],
-           [0. , 1.8, 5.8],
-           [0. , 1.8, 5.5],
-           [1. , 0.2, 1.4],
-           [0. , 2.3, 5.4],
-           [0. , 1. , 3.3],
-           [1. , 0.2, 1.5],
-           [1. , 0.5, 1.7],
-           [1. , 0.3, 1.7],
-           [0. , 1.3, 4.3],
-           [1. , 0.2, 1.5],
-           [0. , 1.4, 4.4],
-           [0. , 2.2, 5.8],
-           [0. , 1.8, 4.8],
-           [0. , 1.5, 4.5],
-           [0. , 1.5, 4.5],
-           [0. , 1. , 3.3],
-           [0. , 1.5, 4.5],
-           [1. , 0.2, 1.2],
-           [0. , 1.4, 5.6],
-           [0. , 2.2, 5.6],
-           [0. , 1.6, 4.5],
-           [1. , 0.2, 1.4],
-           [0. , 1.9, 5.3],
-           [1. , 0.3, 1.3],
-           [1. , 0.2, 1.3],
-           [1. , 0.2, 1.3],
-           [1. , 0.6, 1.6],
-           [0. , 1.7, 5. ],
-           [0. , 1.3, 4.5],
-           [1. , 0.2, 1. ],
-           [0. , 1.7, 4.5],
-           [0. , 2. , 5.2],
-           [0. , 1.3, 4.6]], dtype=float32)
-
-
-
-
-```python
-X_test.shape
-```
-
-
-
-
-    (45, 3)
-
-
-
-
-```python
-y_test
-```
-
-
-
-
-    array([2, 1, 2, 1, 2, 2, 1, 1, 0, 2, 0, 0, 2, 2, 0, 2, 1, 0, 0, 0, 1, 0,
-           1, 2, 2, 1, 1, 1, 1, 0, 2, 2, 1, 0, 2, 0, 0, 0, 0, 1, 1, 0, 2, 2,
-           1])
-
-
-
-
-```python
-y_test.shape
-```
-
-
-
-
-    (45,)
-
-
-
-### Re-Scale Features
-
-
-```python
-scaler = StandardScaler()
-X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=lean_features)
-X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=lean_features)
-# Re-save scaler for inference
-joblib.dump(scaler, "iris_scaler.pkl")
-print("Scaler Saved: 'iris_scaler.pkl'")
-```
-
-    Scaler Saved: 'iris_scaler.pkl'
-
-
-### Re-Create Custom Dataset (Memory Efficient)
-
-
-```python
-class NumpyDataset(torch.utils.data.Dataset):
-    """
-    A memory-efficient dataset that keeps data as numpy arrays.
-    Converts to tensors only when batching (on-demand).
-    Specifically designed for classification tasks.
-    """
-
-    def __init__(self, X, y, device):
-        """
-        Initializes the dataset with numpy arrays.
-
-        Parameters:
-            X (np.ndarray): Feature array.
-            y (np.ndarray): Label array (classification targets).
-            device (torch.device): Device to move tensors to.
-
-        Returns:
-            None
-        """
-        self.X = X
-        self.y = y
-        self.device = device
-
-    def __len__(self):
-        """
-        Returns the number of samples in the dataset.
-
-        Returns:
-            int: Number of samples.
-        """
-        return len(self.X)
-
-    def __getitem__(self, idx):
-        """
-        Returns a single sample as tensors on the specified device.
-
-        Parameters:
-            idx (int): Index of the sample.
-
-        Returns:
-            tuple[torch.Tensor, torch.Tensor]: Feature and label tensors.
-        """
-        X_tensor = torch.tensor(self.X[idx]).float().to(self.device)
-        y_tensor = torch.tensor(self.y[idx]).long().to(self.device)
-        return X_tensor, y_tensor
-```
-
-## Re-Create DataLoaders
-
-
-```python
-train_dataset = NumpyDataset(X_train_scaled.values, y_train, DEVICE)
-test_dataset = NumpyDataset(X_test_scaled.values, y_test, DEVICE)
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
-len(train_loader), len(test_loader)
-```
-
-
-
-
-    (4, 2)
-
-
-
-## Re-Create Loss Function & Optimizer
-
-
-```python
-# Initialize the model strictly using CrossEntropyLoss for the classification task
-if df[TARGET_VAR].nunique() == 2:
-    # Binary Classification (Output layer must have 1 neuron)
-    criterion = nn.BCEWithLogitsLoss()
-else:
-    # Multi-class Classification (Output layer must have 2+ neurons)
-    criterion = nn.CrossEntropyLoss()
-criterion
-```
-
-
-
-
-    CrossEntropyLoss()
-
-
-
-
-```python
-optimizer = torch.optim.AdamW(new_model.parameters(), lr=LR)
-optimizer
-```
-
-
-
-
-    AdamW (
-    Parameter Group 0
-        amsgrad: False
-        betas: (0.9, 0.999)
-        capturable: False
-        decoupled_weight_decay: True
-        differentiable: False
-        eps: 1e-08
-        foreach: None
-        fused: None
-        lr: 0.01
-        maximize: False
-        weight_decay: 0.01
-    )
-
-
-
-## Re-Train Model
-
-
-```python
-train_losses = []
-val_losses = []
-train_losses, val_losses
-```
-
-
-
-
-    ([], [])
-
-
-
-
-```python
-best_val_loss = float("inf")
-for i in range(EPOCHS):
-    new_model.train()
-    epoch_train_loss = 0.0
-    for X_batch, y_batch in train_loader:
-        optimizer.zero_grad()
-        y_pred = new_model(X_batch)
-        loss = criterion(y_pred, y_batch)
-        loss.backward()
-        optimizer.step()
-        epoch_train_loss += loss.item()
-    train_loss = epoch_train_loss / len(train_loader)
-    train_losses.append(train_loss)
-    new_model.eval()
-    epoch_val_loss = 0.0
-    with torch.no_grad():
-        for X_batch, y_batch in test_loader:
-            y_val_pred = new_model(X_batch)
-            epoch_val_loss += criterion(y_val_pred, y_batch).item()
-    val_loss = epoch_val_loss / len(test_loader)
-    val_losses.append(val_loss)
-    # Save model if validation loss improves
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        torch.save(new_model.state_dict(), "iris_model.pth")
-    if i % LOG_INTERVAL == 0:
-        print(
-            f"Epoch {i}/{EPOCHS} - Training Loss: {train_loss:.4f} - Validation Loss: {val_loss:.4f}"
-        )
-print("-" * 30)
-print(f"Best Validation Loss: {best_val_loss:.4f}")
-print("Model Weights Saved: 'iris_model.pth'")
-```
-
-    Epoch 0/1000 - Training Loss: 1.0735 - Validation Loss: 1.0206
-    Epoch 10/1000 - Training Loss: 0.1752 - Validation Loss: 0.2261
-    Epoch 20/1000 - Training Loss: 0.0578 - Validation Loss: 0.1696
-    Epoch 30/1000 - Training Loss: 0.0763 - Validation Loss: 0.1637
-    Epoch 40/1000 - Training Loss: 0.0554 - Validation Loss: 0.1845
-    Epoch 50/1000 - Training Loss: 0.0467 - Validation Loss: 0.1695
-    Epoch 60/1000 - Training Loss: 0.0604 - Validation Loss: 0.2041
-    Epoch 70/1000 - Training Loss: 0.0714 - Validation Loss: 0.1780
-    Epoch 80/1000 - Training Loss: 0.0942 - Validation Loss: 0.1906
-    Epoch 90/1000 - Training Loss: 0.0404 - Validation Loss: 0.1591
-    Epoch 100/1000 - Training Loss: 0.0532 - Validation Loss: 0.1836
-    Epoch 110/1000 - Training Loss: 0.0411 - Validation Loss: 0.1731
-    Epoch 120/1000 - Training Loss: 0.0388 - Validation Loss: 0.1757
-    Epoch 130/1000 - Training Loss: 0.0389 - Validation Loss: 0.1697
-    Epoch 140/1000 - Training Loss: 0.0539 - Validation Loss: 0.1631
-    Epoch 150/1000 - Training Loss: 0.0619 - Validation Loss: 0.2242
-    Epoch 160/1000 - Training Loss: 0.0419 - Validation Loss: 0.1842
-    Epoch 170/1000 - Training Loss: 0.0993 - Validation Loss: 0.1656
-    Epoch 180/1000 - Training Loss: 0.0450 - Validation Loss: 0.1617
-    Epoch 190/1000 - Training Loss: 0.0556 - Validation Loss: 0.2140
-    Epoch 200/1000 - Training Loss: 0.0402 - Validation Loss: 0.1716
-    Epoch 210/1000 - Training Loss: 0.0401 - Validation Loss: 0.1720
-    Epoch 220/1000 - Training Loss: 0.0375 - Validation Loss: 0.2012
-    Epoch 230/1000 - Training Loss: 0.0395 - Validation Loss: 0.1669
-    Epoch 240/1000 - Training Loss: 0.0389 - Validation Loss: 0.1715
-    Epoch 250/1000 - Training Loss: 0.0393 - Validation Loss: 0.1837
-    Epoch 260/1000 - Training Loss: 0.0388 - Validation Loss: 0.1732
-    Epoch 270/1000 - Training Loss: 0.0404 - Validation Loss: 0.2019
-    Epoch 280/1000 - Training Loss: 0.0389 - Validation Loss: 0.1823
-    Epoch 290/1000 - Training Loss: 0.0437 - Validation Loss: 0.1691
-    Epoch 300/1000 - Training Loss: 0.1004 - Validation Loss: 0.2070
-    Epoch 310/1000 - Training Loss: 0.0384 - Validation Loss: 0.1760
-    Epoch 320/1000 - Training Loss: 0.0385 - Validation Loss: 0.1794
-    Epoch 330/1000 - Training Loss: 0.0891 - Validation Loss: 0.2017
-    Epoch 340/1000 - Training Loss: 0.0429 - Validation Loss: 0.1754
-    Epoch 350/1000 - Training Loss: 0.0415 - Validation Loss: 0.1823
-    Epoch 360/1000 - Training Loss: 0.0407 - Validation Loss: 0.1884
-    Epoch 370/1000 - Training Loss: 0.0378 - Validation Loss: 0.1738
-    Epoch 380/1000 - Training Loss: 0.0407 - Validation Loss: 0.1822
-    Epoch 390/1000 - Training Loss: 0.0396 - Validation Loss: 0.1922
-    Epoch 400/1000 - Training Loss: 0.0454 - Validation Loss: 0.1716
-    Epoch 410/1000 - Training Loss: 0.0429 - Validation Loss: 0.1749
-    Epoch 420/1000 - Training Loss: 0.0712 - Validation Loss: 0.1787
-    Epoch 430/1000 - Training Loss: 0.0455 - Validation Loss: 0.1888
-    Epoch 440/1000 - Training Loss: 0.0450 - Validation Loss: 0.1746
-    Epoch 450/1000 - Training Loss: 0.0392 - Validation Loss: 0.1981
-    Epoch 460/1000 - Training Loss: 0.0394 - Validation Loss: 0.1939
-    Epoch 470/1000 - Training Loss: 0.0811 - Validation Loss: 0.1748
-    Epoch 480/1000 - Training Loss: 0.0774 - Validation Loss: 0.1859
-    Epoch 490/1000 - Training Loss: 0.0733 - Validation Loss: 0.1835
-    Epoch 500/1000 - Training Loss: 0.0422 - Validation Loss: 0.1809
-    Epoch 510/1000 - Training Loss: 0.0395 - Validation Loss: 0.1822
-    Epoch 520/1000 - Training Loss: 0.0681 - Validation Loss: 0.1789
-    Epoch 530/1000 - Training Loss: 0.0392 - Validation Loss: 0.1965
-    Epoch 540/1000 - Training Loss: 0.0396 - Validation Loss: 0.1931
-    Epoch 550/1000 - Training Loss: 0.0591 - Validation Loss: 0.1949
-    Epoch 560/1000 - Training Loss: 0.0793 - Validation Loss: 0.1782
-    Epoch 570/1000 - Training Loss: 0.0606 - Validation Loss: 0.1907
-    Epoch 580/1000 - Training Loss: 0.0511 - Validation Loss: 0.1723
-    Epoch 590/1000 - Training Loss: 0.0415 - Validation Loss: 0.2065
-    Epoch 600/1000 - Training Loss: 0.0391 - Validation Loss: 0.1793
-    Epoch 610/1000 - Training Loss: 0.0435 - Validation Loss: 0.1712
-    Epoch 620/1000 - Training Loss: 0.0597 - Validation Loss: 0.1866
-    Epoch 630/1000 - Training Loss: 0.0403 - Validation Loss: 0.1925
-    Epoch 640/1000 - Training Loss: 0.0401 - Validation Loss: 0.1812
-    Epoch 650/1000 - Training Loss: 0.0402 - Validation Loss: 0.2027
-    Epoch 660/1000 - Training Loss: 0.0417 - Validation Loss: 0.1808
-    Epoch 670/1000 - Training Loss: 0.0384 - Validation Loss: 0.1878
-    Epoch 680/1000 - Training Loss: 0.0397 - Validation Loss: 0.1863
-    Epoch 690/1000 - Training Loss: 0.0572 - Validation Loss: 0.1994
-    Epoch 700/1000 - Training Loss: 0.0430 - Validation Loss: 0.1731
-    Epoch 710/1000 - Training Loss: 0.0474 - Validation Loss: 0.1756
-    Epoch 720/1000 - Training Loss: 0.0399 - Validation Loss: 0.1774
-    Epoch 730/1000 - Training Loss: 0.0377 - Validation Loss: 0.1870
-    Epoch 740/1000 - Training Loss: 0.0440 - Validation Loss: 0.1778
-    Epoch 750/1000 - Training Loss: 0.0714 - Validation Loss: 0.1852
-    Epoch 760/1000 - Training Loss: 0.0618 - Validation Loss: 0.2115
-    Epoch 770/1000 - Training Loss: 0.0778 - Validation Loss: 0.1741
-    Epoch 780/1000 - Training Loss: 0.0380 - Validation Loss: 0.1993
-    Epoch 790/1000 - Training Loss: 0.0409 - Validation Loss: 0.1778
-    Epoch 800/1000 - Training Loss: 0.0384 - Validation Loss: 0.1887
-    Epoch 810/1000 - Training Loss: 0.0453 - Validation Loss: 0.1776
-    Epoch 820/1000 - Training Loss: 0.0394 - Validation Loss: 0.1976
-    Epoch 830/1000 - Training Loss: 0.0650 - Validation Loss: 0.1757
-    Epoch 840/1000 - Training Loss: 0.0380 - Validation Loss: 0.1959
-    Epoch 850/1000 - Training Loss: 0.0413 - Validation Loss: 0.1941
-    Epoch 860/1000 - Training Loss: 0.0391 - Validation Loss: 0.2044
-    Epoch 870/1000 - Training Loss: 0.0404 - Validation Loss: 0.1884
-    Epoch 880/1000 - Training Loss: 0.0394 - Validation Loss: 0.1965
-    Epoch 890/1000 - Training Loss: 0.0394 - Validation Loss: 0.1889
-    Epoch 900/1000 - Training Loss: 0.0641 - Validation Loss: 0.1854
-    Epoch 910/1000 - Training Loss: 0.0423 - Validation Loss: 0.1853
-    Epoch 920/1000 - Training Loss: 0.0479 - Validation Loss: 0.2510
-    Epoch 930/1000 - Training Loss: 0.0459 - Validation Loss: 0.2144
-    Epoch 940/1000 - Training Loss: 0.0390 - Validation Loss: 0.1751
-    Epoch 950/1000 - Training Loss: 0.0621 - Validation Loss: 0.1812
-    Epoch 960/1000 - Training Loss: 0.0410 - Validation Loss: 0.1776
-    Epoch 970/1000 - Training Loss: 0.0726 - Validation Loss: 0.1767
-    Epoch 980/1000 - Training Loss: 0.0567 - Validation Loss: 0.1845
-    Epoch 990/1000 - Training Loss: 0.0424 - Validation Loss: 0.1783
-    ------------------------------
-    Best Validation Loss: 0.1500
-    Model Weights Saved: 'iris_model.pth'
-
-
-## Evaluate Model
-
-
-```python
-new_model.eval()
-```
-
-
-
-
-    NewModel(
-      (fc1): Linear(in_features=3, out_features=8, bias=True)
-      (fc2): Linear(in_features=8, out_features=8, bias=True)
-      (out): Linear(in_features=8, out_features=3, bias=True)
-      (dropout): Dropout(p=0.0, inplace=False)
-    )
-
-
-
-
-```python
-total_val_loss = 0.0
-total_val_loss
-```
-
-
-
-
-    0.0
-
-
-
-
-```python
-with torch.no_grad():
-    for X_batch, y_batch in test_loader:
-        y_eval = new_model(X_batch)
-        total_val_loss += criterion(y_eval, y_batch).item()
-val_loss = total_val_loss / len(test_loader)
-val_loss
-```
-
-
-
-
-    0.18089495413005352
-
-
-
-### Model Accuracy & Loss
-
-
-```python
-# Evaluate the trained model using standard classification accuracy
-new_model.eval()
-train_correct = 0
-train_total = 0
-test_correct = 0
-test_total = 0
-with torch.no_grad():
-    for X_batch, y_batch in train_loader:
-        preds = new_model(X_batch).argmax(dim=1)
-        train_correct += (preds == y_batch).sum().item()
-        train_total += len(y_batch)
-    for X_batch, y_batch in test_loader:
-        preds = new_model(X_batch).argmax(dim=1)
-        test_correct += (preds == y_batch).sum().item()
-        test_total += len(y_batch)
-train_acc = train_correct / train_total
-test_acc = test_correct / test_total
-print(f"Train Accuracy: {train_acc:.4f} ({train_correct}/{train_total})")
-print(f"Test Accuracy: {test_acc:.4f} ({test_correct}/{test_total})")
-print(f"Training Loss: {train_loss:.4f}")
-print(f"Validation Loss: {val_loss:.4f}")
-```
-
-    Train Accuracy: 0.9714 (102/105)
-    Test Accuracy: 0.9333 (42/45)
-    Training Loss: 0.0425
-    Validation Loss: 0.1809
-
-
-### Model Correct vs Incorrect Predictions
-
-
-```python
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
-colors = ["#00FF00", "#FF0000"]  # Green for correct, red for incorrect
-ax1.pie(
-    [train_acc, 1 - train_acc],
-    labels=["Correct", "Incorrect"],
-    autopct="%1.1f%%",
-    colors=colors,
-    startangle=90,
-    explode=(0.1, 0),
+# Create and train the lean-feature model
+model_lean = IrisMLP(
+    in_features=len(features_lean),
+    h1=H1,
+    h2=H2,
+    out_features=OUT_FEATURES,
+    dropout=DROPOUT,
+).to(DEVICE)
+class_weights_lean = _compute_class_weights(y_tr_lean, DEVICE)
+criterion = nn.CrossEntropyLoss(weight=class_weights_lean)
+optimizer = torch.optim.AdamW(model_lean.parameters(), lr=LR)
+lean_config = {
+    "epochs": EPOCHS,
+    "log_interval": LOG_INTERVAL,
+    "save_path": "iris_model_lean.pth",
+    "patience": PATIENCE,
+}
+train_losses_lean, val_losses_lean, best_lean = train_model(
+    model_lean, train_loader_lean, val_loader_lean, criterion, optimizer, lean_config
 )
-ax1.set_title("Training Accuracy")
-ax2.pie(
-    [test_acc, 1 - test_acc],
-    labels=["Correct", "Incorrect"],
-    autopct="%1.1f%%",
-    colors=colors,
-    startangle=90,
-    explode=(0.1, 0),
+print(f"\nBest Validation Loss: {best_lean:.4f}")
+```
+
+    Epoch 0/1000 - Train: 1.1037 - Val: 1.0816
+    Epoch 10/1000 - Train: 0.4595 - Val: 0.3949
+    Epoch 20/1000 - Train: 0.1058 - Val: 0.0388
+    Epoch 30/1000 - Train: 0.0662 - Val: 0.0105
+    Epoch 40/1000 - Train: 0.0599 - Val: 0.0065
+    Epoch 50/1000 - Train: 0.0545 - Val: 0.0055
+    Epoch 60/1000 - Train: 0.0562 - Val: 0.0054
+    Epoch 70/1000 - Train: 0.0531 - Val: 0.0035
+    Epoch 80/1000 - Train: 0.0605 - Val: 0.0061
+    Epoch 90/1000 - Train: 0.0542 - Val: 0.0045
+    Epoch 100/1000 - Train: 0.0594 - Val: 0.0055
+    Epoch 110/1000 - Train: 0.0568 - Val: 0.0037
+    Epoch 120/1000 - Train: 0.0550 - Val: 0.0043
+    Epoch 130/1000 - Train: 0.0527 - Val: 0.0031
+    Epoch 140/1000 - Train: 0.0530 - Val: 0.0040
+    Epoch 150/1000 - Train: 0.0557 - Val: 0.0041
+    Epoch 160/1000 - Train: 0.0574 - Val: 0.0050
+    Epoch 170/1000 - Train: 0.0559 - Val: 0.0029
+    Early stopping at epoch 173 (patience=50)
+    
+    Best Validation Loss: 0.0025
+
+
+### Evaluate Lean-Feature Model
+
+
+```python
+# Collect predictions and compute accuracy
+y_true_lean, y_pred_lean, y_probs_lean = collect_predictions(
+    model_lean, test_loader_lean
 )
-ax2.set_title("Test Accuracy")
-plt.tight_layout()
-plt.show()
+train_acc_lean = accuracy_score(*collect_predictions(model_lean, train_loader_lean)[:2])
+val_acc_lean = accuracy_score(*collect_predictions(model_lean, val_loader_lean)[:2])
+test_acc_lean = accuracy_score(y_true_lean, y_pred_lean)
+print(f"Train Accuracy: {train_acc_lean:.4f}")
+print(f"Val Accuracy:   {val_acc_lean:.4f}")
+print(f"Test Accuracy:  {test_acc_lean:.4f}")
+```
+
+    Train Accuracy: 0.9663
+    Val Accuracy:   1.0000
+    Test Accuracy:  0.9333
+
+
+
+```python
+plot_accuracy_pies(train_acc_lean, test_acc_lean)
 ```
 
 
     
-![png](README_files/I-MLP_201_0.png)
+![png](README_files/I-MLP_163_0.png)
     
 
 
-### Model Confusion Matrix
-
 
 ```python
-y_true = []
-y_pred = []
-new_model.eval()
-with torch.no_grad():
-    for X_batch, y_batch in test_loader:
-        # Get raw scores
-        outputs = new_model(X_batch)
-        # Convert raw scores to class index (0, 1, or 2)
-        _, predicted = torch.max(outputs, 1)
-        # Store results
-        y_true.extend(y_batch.cpu().numpy())
-        y_pred.extend(predicted.cpu().numpy())
-cm = confusion_matrix(y_true, y_pred)
-plt.figure(figsize=(8, 6))
-sns.heatmap(
-    cm,
-    annot=True,
-    fmt="d",
-    cmap="Blues",
-    xticklabels=["Setosa", "Versicolor", "Virginica"],
-    yticklabels=["Setosa", "Versicolor", "Virginica"],
-)
-plt.xlabel("Predicted Label")
-plt.ylabel("Actual Label")
-plt.title("Confusion Matrix: Where did the model fail?")
-plt.show()
+plot_confusion_matrix(y_true_lean, y_pred_lean, CLASS_NAMES)
 ```
 
 
     
-![png](README_files/I-MLP_203_0.png)
+![png](README_files/I-MLP_164_0.png)
     
 
 
-### Model Training vs Validation Over Epochs
-
 
 ```python
-plt.figure(figsize=(10, 6))
-plt.plot(range(len(train_losses)), train_losses, label="Training Loss")
-plt.plot(range(len(val_losses)), val_losses, label="Validation Loss")
-plt.xlabel("Epochs")
-plt.ylabel("Loss")
-plt.title("Training and Validation Loss Over Epochs")
-plt.legend()
-plt.show()
+plot_loss_curves(train_losses_lean, val_losses_lean)
 ```
 
 
     
-![png](README_files/I-MLP_205_0.png)
+![png](README_files/I-MLP_165_0.png)
     
 
 
-### Model Classification Report
-
 
 ```python
-print(
-    classification_report(
-        y_true, y_pred, target_names=["Setosa", "Versicolor", "Virginica"]
-    )
-)
+print(classification_report(y_true_lean, y_pred_lean, target_names=CLASS_NAMES))
 ```
 
                   precision    recall  f1-score   support
@@ -4400,188 +4251,82 @@ print(
     
 
 
-### ROC Curve
-
 
 ```python
-y_probs = []
-y_true = []
-new_model.eval()
-with torch.no_grad():
-    for X_batch, y_batch in test_loader:
-        # Get Logits (Raw scores)
-        logits = new_model(X_batch)
-        # Apply Softmax to get Probabilities (0.0 to 1.0)
-        probs = F.softmax(logits, dim=1)
-        # Store results
-        y_probs.extend(probs.cpu().numpy())
-        y_true.extend(y_batch.cpu().numpy())
-# Convert to numpy array for Scikit-Learn
-y_probs = np.array(y_probs)
-y_probs
+plot_roc_curves(y_true_lean, y_probs_lean, CLASS_NAMES)
 ```
 
 
-
-
-    array([[2.10318512e-06, 6.44016080e-04, 9.99353826e-01],
-           [1.25439241e-04, 9.88427341e-01, 1.14471633e-02],
-           [4.94585256e-04, 6.37881696e-01, 3.61623734e-01],
-           [3.18270089e-04, 9.02363241e-01, 9.73184407e-02],
-           [3.73496441e-04, 1.99031666e-01, 8.00594926e-01],
-           [5.84482279e-07, 3.01060441e-04, 9.99698400e-01],
-           [1.36753415e-05, 9.99596417e-01, 3.89885303e-04],
-           [7.66666199e-06, 9.99794066e-01, 1.98312351e-04],
-           [9.99996662e-01, 2.90368075e-06, 5.10239431e-07],
-           [8.49259504e-06, 1.47497375e-03, 9.98516619e-01],
-           [9.99998927e-01, 8.95015148e-07, 1.33037830e-07],
-           [9.99998689e-01, 1.13254055e-06, 1.74074216e-07],
-           [1.54832778e-05, 2.10663257e-03, 9.97877955e-01],
-           [5.12242877e-05, 4.28376347e-03, 9.95665014e-01],
-           [9.99998331e-01, 1.43310467e-06, 2.27769149e-07],
-           [2.56325688e-06, 7.24289392e-04, 9.99273121e-01],
-           [3.61280377e-06, 9.99936581e-01, 5.97863072e-05],
-           [9.99997854e-01, 1.81343341e-06, 2.98026237e-07],
-           [9.99994993e-01, 4.07210837e-06, 9.90859462e-07],
-           [9.99996185e-01, 3.25016526e-06, 6.36579387e-07],
-           [2.57994798e-05, 9.99186695e-01, 7.87442550e-04],
-           [9.99997854e-01, 1.81343341e-06, 2.98026237e-07],
-           [4.37027302e-05, 9.98389006e-01, 1.56731717e-03],
-           [1.02324509e-06, 4.19844262e-04, 9.99579132e-01],
-           [4.50400665e-04, 3.32083017e-01, 6.67466521e-01],
-           [1.08871696e-04, 9.91101086e-01, 8.79005156e-03],
-           [1.08871696e-04, 9.91101086e-01, 8.79005156e-03],
-           [3.61280377e-06, 9.99936581e-01, 5.97863072e-05],
-           [1.08871696e-04, 9.91101086e-01, 8.79005156e-03],
-           [9.99998927e-01, 8.95015148e-07, 1.33037830e-07],
-           [3.38533951e-04, 1.43549740e-01, 8.56111705e-01],
-           [2.27467467e-06, 6.74700248e-04, 9.99323010e-01],
-           [1.79379393e-04, 9.73603785e-01, 2.62168236e-02],
-           [9.99998331e-01, 1.43310467e-06, 2.27769149e-07],
-           [5.79290718e-05, 5.05266199e-03, 9.94889379e-01],
-           [9.99998450e-01, 1.26768361e-06, 2.17177060e-07],
-           [9.99998689e-01, 1.13254055e-06, 1.74074216e-07],
-           [9.99998689e-01, 1.13254055e-06, 1.74074216e-07],
-           [9.99995470e-01, 3.60207241e-06, 9.44781277e-07],
-           [4.27926949e-04, 2.74761260e-01, 7.24810779e-01],
-           [4.03185841e-05, 9.98646796e-01, 1.31291209e-03],
-           [9.99999285e-01, 5.58962597e-07, 7.77061331e-08],
-           [2.83748086e-04, 9.23804760e-01, 7.59115443e-02],
-           [4.40766016e-05, 3.91854998e-03, 9.96037364e-01],
-           [5.40109031e-05, 9.97907877e-01, 2.03817640e-03]], dtype=float32)
-
+    
+![png](README_files/I-MLP_167_0.png)
+    
 
 
 
 ```python
-final_auc_score = roc_auc_score(y_true, y_probs, multi_class="ovr")
-final_auc_score
+print_summary_metrics(y_true_lean, y_pred_lean, y_probs_lean)
 ```
 
+    ------------------------------------------------------------------------------------------
+    METRIC          SCORE      DESCRIPTION
+    ------------------------------------------------------------------------------------------
+    Accuracy        0.9333     Overall correctness (caution: misleading if imbalanced)
+    Precision       0.9345     When predicting positive, how often correct?
+    Recall          0.9333     Of all actual positives, how many found?
+    F1-Score        0.9333     Harmonic mean of Precision & Recall
+    ROC AUC         0.9941     Class separability (1.0 = perfect)
+    ------------------------------------------------------------------------------------------
 
 
-
-    0.994074074074074
-
-
+### SHAP Analysis — Lean-Feature Model
 
 
 ```python
-final_auc_score = roc_auc_score(y_true, y_probs, multi_class="ovr")
-print(f"Overall ROC AUC Score: {final_auc_score:.4f}")
-colors = ["red", "green", "blue"]
-plt.figure(figsize=(10, 8))
-for class_label in range(len(TARGET_VARS)):
-    # Create binary target for this specific class (One-vs-Rest)
-    y_true_binary = (np.array(y_true) == class_label).astype(int)
-    # Get the curve points
-    fpr, tpr, _ = roc_curve(y_true_binary, y_probs[:, class_label])
-    # Calculate AUC for this specific class
-    current_auc = auc(fpr, tpr)
-    # Plot
-    plt.plot(
-        fpr,
-        tpr,
-        color=colors[class_label],
-        lw=2,
-        label=f"{TARGET_VARS[class_label]} (AUC = {current_auc:.4f})",
-    )
-plt.plot([0, 1], [0, 1], "k--", label="Random Classifier (AUC = 0.50)")
-plt.xlabel("False Positive Rate")
-plt.ylabel("True Positive Rate")
-plt.title(f"Multi-Class ROC Curve (Overall AUC = {final_auc_score:.4f})")
-plt.legend(loc="lower right")
-plt.grid(alpha=0.3)
-plt.tight_layout()
-plt.show()
+run_shap_analysis(model_lean, X_tr_lean, X_te_lean, CLASS_NAMES, DEVICE)
 ```
 
-    Overall ROC AUC Score: 0.9941
+
+      0%|          | 0/45 [00:00<?, ?it/s]
 
 
 
     
-![png](README_files/I-MLP_211_1.png)
+![png](README_files/I-MLP_170_1.png)
     
 
 
-### Summary Metrics
+### Save Lean Model Artifacts
 
 
 ```python
-test_accuracy = accuracy_score(y_true, y_pred)
-precision, recall, f1, _ = precision_recall_fscore_support(
-    y_true, y_pred, average="weighted"
-)
-auc_score = roc_auc_score(y_true, y_probs, multi_class="ovr")
-print("-" * 101)
-print(f"{'METRIC':<18} {'SCORE':<10} {'DESCRIPTION'}")
-print("-" * 101)
-print(
-    f"{'Accuracy':<18} {test_accuracy:.4f}     Overall correctness (caution: misleading if classes are imbalanced)"
-)
-print(
-    f"{'Precision':<18} {precision:.4f}     Trustworthiness: When it predicts 'Yes', how often is it right?"
-)
-print(
-    f"{'Recall':<18} {recall:.4f}     Coverage: Of all actual 'Yes' cases, how many did we find?"
-)
-print(
-    f"{'F1-Score':<18} {f1:.4f}     Balance: Harmonic mean of Precision & Recall (good for unequal classes)"
-)
-print(
-    f"{'ROC AUC':<18} {auc_score:.4f}     Separability: How well it distinguishes between classes (1.0 = perfect)"
-)
-print("-" * 101)
+# Save lean model scaler for production inference
+joblib.dump(scaler_lean, "iris_scaler.pkl")
+print("Scaler Saved: 'iris_scaler.pkl'")
 ```
 
-    -----------------------------------------------------------------------------------------------------
-    METRIC             SCORE      DESCRIPTION
-    -----------------------------------------------------------------------------------------------------
-    Accuracy           0.9333     Overall correctness (caution: misleading if classes are imbalanced)
-    Precision          0.9345     Trustworthiness: When it predicts 'Yes', how often is it right?
-    Recall             0.9333     Coverage: Of all actual 'Yes' cases, how many did we find?
-    F1-Score           0.9333     Balance: Harmonic mean of Precision & Recall (good for unequal classes)
-    ROC AUC            0.9941     Separability: How well it distinguishes between classes (1.0 = perfect)
-    -----------------------------------------------------------------------------------------------------
+    Scaler Saved: 'iris_scaler.pkl'
 
 
-## Load Model
+## Inference
+
+### Load Model
 
 
 ```python
-loaded_model = NewModel().to(DEVICE)
+loaded_model = IrisMLP(
+    in_features=len(features_lean), h1=H1, h2=H2, out_features=OUT_FEATURES
+).to(DEVICE)
 loaded_model.load_state_dict(
-    torch.load("iris_model.pth", map_location=DEVICE, weights_only=True)
+    torch.load("iris_model_lean.pth", map_location=DEVICE, weights_only=True)
 )
 loaded_model.eval()
-print("Model Loaded: 'iris_model.pth'")
+print("Model Loaded: 'iris_model_lean.pth'")
 ```
 
-    Model Loaded: 'iris_model.pth'
+    Model Loaded: 'iris_model_lean.pth'
 
 
-## Load Scaler
+### Load Scaler
 
 
 ```python
@@ -4592,86 +4337,27 @@ print("Scaler Loaded: 'iris_scaler.pkl'")
     Scaler Loaded: 'iris_scaler.pkl'
 
 
-## Inference
+### Example: New Flower Measurements
 
 
 ```python
-def _prepare_input_tensor(features, device):
-    """
-    Prepares input features as a tensor on the specified device.
-
-    Parameters:
-        features (list[float]): List of feature values.
-        device (torch.device): Device to move tensor to.
-
-    Returns:
-        torch.Tensor: Prepared input tensor with shape (1, n_features).
-    """
-    X_new = torch.tensor(features).float().to(device)
-    if X_new.dim() == 1:
-        X_new = X_new.unsqueeze(0)
-    return X_new
-
-
-def _get_prediction_details(logits):
-    """
-    Extracts predicted class index and confidence from model logits.
-
-    Parameters:
-        logits (torch.Tensor): Raw model output logits.
-
-    Returns:
-        tuple[int, float]: (predicted_class_index, confidence_score).
-    """
-    probabilities = torch.softmax(logits, dim=1)
-    predicted_class = logits.argmax(dim=1).item()
-    confidence = probabilities[0][predicted_class].item()
-    return predicted_class, confidence
-
-
-def predict(model, features):
-    """
-    Make a prediction on new data for classification.
-
-    Parameters:
-        model (nn.Module): Trained PyTorch model.
-        features (list[float]): List of feature values.
-
-    Returns:
-        tuple[str, float]: (class_name, confidence) for classification.
-    """
-    species_map = {0: "setosa", 1: "versicolor", 2: "virginica"}
-    model.eval()
-    with torch.no_grad():
-        X_new = _prepare_input_tensor(features, DEVICE)
-        logits = model(X_new)
-        pred_class, confidence = _get_prediction_details(logits)
-        return species_map[pred_class], confidence
-```
-
-### Example: New Flower Measurements 
-
-
-```python
-# 1. Define Raw Data (matching lean_features order: sepal_dominance, petal_width, petal_length)
+# 1. Define Raw Data (matching features_lean order: sepal_dominance, petal_width, petal_length)
 sepal_dominance = 1.0  # setosa IS sepal_dominant (sepal_length > 2*petal_length)
-petal_width = 0.2  # small petal width → setosa characteristic
-petal_length = 1.4  # small petal length → setosa characteristic
+petal_width = 0.2  # small petal width -> setosa characteristic
+petal_length = 1.4  # small petal length -> setosa characteristic
 raw_flower = [sepal_dominance, petal_width, petal_length]
 
 # 2. CRITICAL: Scale using the fitted scaler from training
 scaled_flower = scaler.transform([raw_flower])
 
-# 3. Predict using SCALED data (classification only)
-species, confidence = predict(loaded_model, scaled_flower[0])
-
+# 3. Predict using SCALED data
+species, confidence = predict(loaded_model, scaled_flower[0], SPECIES_MAP, DEVICE)
 print(f"Raw Input:         {raw_flower}")
-# print(f"Scaled Input:      {list(scaled_flower[0])}")
 print(f"Predicted Species: {species}")
 print(f"Confidence:        {confidence:.2%}")
 ```
 
     Raw Input:         [1.0, 0.2, 1.4]
     Predicted Species: setosa
-    Confidence:        99.96%
+    Confidence:        99.98%
 
