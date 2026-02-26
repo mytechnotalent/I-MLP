@@ -69,7 +69,7 @@ torch.manual_seed(SEED)
 
 
 
-    <torch._C.Generator at 0x12e450b70>
+    <torch._C.Generator at 0x145d60bb0>
 
 
 
@@ -1782,6 +1782,157 @@ for num_var in CONTINUOUS_FEATURES:
     
 
 
+### Regression Plots — Linear Relationships Between Pairs of Numerical Variables, Colored by Categorical Variable
+
+
+```python
+def smart_downsample(
+    df: pd.DataFrame,
+    hue_col: str,
+    num_cols: list[str],
+    max_points: int = 10_000,
+    outlier_keep: float = 1.0,
+    random_state: int = SEED,
+) -> pd.DataFrame:
+    """Stratified downsample that preserves category proportions and keeps outliers.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Full dataset.
+    hue_col : str
+        Categorical column used for stratification.
+    num_cols : list[str]
+        Numerical columns checked for outliers (IQR method).
+    max_points : int
+        Target number of rows when df exceeds this size.
+    outlier_keep : float
+        Fraction of detected outliers to always keep (1.0 = all).
+    random_state : int
+        Reproducibility seed.
+
+    Returns
+    -------
+    pd.DataFrame
+        Down-sampled dataframe (original returned unchanged if small enough).
+    """
+    if len(df) <= max_points:
+        return df
+    # --- 1. Identify IQR outliers across all numerical columns ---
+    outlier_mask = pd.Series(False, index=df.index)
+    for col in num_cols:
+        q1, q3 = df[col].quantile(0.25), df[col].quantile(0.75)
+        iqr = q3 - q1
+        outlier_mask |= (df[col] < q1 - 1.5 * iqr) | (df[col] > q3 + 1.5 * iqr)
+    outliers = df[outlier_mask]
+    if outlier_keep < 1.0:
+        outliers = outliers.sample(frac=outlier_keep, random_state=random_state)
+    # --- 2. Stratified sample from non-outlier rows ---
+    non_outliers = df[~df.index.isin(outliers.index)]
+    remaining_budget = max(0, max_points - len(outliers))
+    if remaining_budget > 0 and len(non_outliers) > 0:
+        frac = min(1.0, remaining_budget / len(non_outliers))
+        sampled = non_outliers.groupby(hue_col, group_keys=False).apply(
+            lambda g: g.sample(frac=frac, random_state=random_state)
+        )
+    else:
+        sampled = non_outliers.iloc[:0]
+    result = pd.concat([outliers, sampled]).drop_duplicates()
+    print(
+        f"smart_downsample: {len(df):,} → {len(result):,} rows "
+        f"(outliers kept: {len(outliers):,}, sampled: {len(sampled):,})"
+    )
+    return result
+```
+
+
+```python
+for x_var, y_var in combinations(CONTINUOUS_FEATURES, 2):
+    for cat_var in CATEGORICAL_FEATURES:
+        plot_df = smart_downsample(df_eda, hue_col=cat_var, num_cols=[x_var, y_var])
+        sns.lmplot(
+            data=plot_df,
+            x=x_var,
+            y=y_var,
+            hue=cat_var,
+            height=6,
+            aspect=1.2,
+        )
+        plt.show()
+```
+
+
+    
+![png](README_files/I-MLP_77_0.png)
+    
+
+
+
+    
+![png](README_files/I-MLP_77_1.png)
+    
+
+
+
+    
+![png](README_files/I-MLP_77_2.png)
+    
+
+
+
+    
+![png](README_files/I-MLP_77_3.png)
+    
+
+
+
+    
+![png](README_files/I-MLP_77_4.png)
+    
+
+
+
+    
+![png](README_files/I-MLP_77_5.png)
+    
+
+
+
+    
+![png](README_files/I-MLP_77_6.png)
+    
+
+
+
+    
+![png](README_files/I-MLP_77_7.png)
+    
+
+
+
+    
+![png](README_files/I-MLP_77_8.png)
+    
+
+
+
+    
+![png](README_files/I-MLP_77_9.png)
+    
+
+
+
+    
+![png](README_files/I-MLP_77_10.png)
+    
+
+
+
+    
+![png](README_files/I-MLP_77_11.png)
+    
+
+
 ### Encode Categorical Variables for Correlation, Feature Importance Analysis & Modeling
 
 
@@ -1981,7 +2132,7 @@ plt.show()
 
 
     
-![png](README_files/I-MLP_89_0.png)
+![png](README_files/I-MLP_92_0.png)
     
 
 
@@ -2005,7 +2156,7 @@ plt.show()
 
 
     
-![png](README_files/I-MLP_91_0.png)
+![png](README_files/I-MLP_94_0.png)
     
 
 
@@ -2562,203 +2713,6 @@ disc_df
 
 
 
-### Discriminative Score Results — Detailed Breakdown
-
-
-```python
-# Format and display the styled results table
-disc_df[["Feature", "Class", "P", "E", "M", "S"]].style.format(
-    {"P": "{:.4f}", "E": "{:.4f}", "M": "{:.4f}", "S": "{:.4f}"}
-).set_caption("Discriminative Score Breakdown (One-vs-Rest)")
-```
-
-
-
-
-<style type="text/css">
-</style>
-<table id="T_057b9">
-  <caption>Discriminative Score Breakdown (One-vs-Rest)</caption>
-  <thead>
-    <tr>
-      <th class="blank level0" >&nbsp;</th>
-      <th id="T_057b9_level0_col0" class="col_heading level0 col0" >Feature</th>
-      <th id="T_057b9_level0_col1" class="col_heading level0 col1" >Class</th>
-      <th id="T_057b9_level0_col2" class="col_heading level0 col2" >P</th>
-      <th id="T_057b9_level0_col3" class="col_heading level0 col3" >E</th>
-      <th id="T_057b9_level0_col4" class="col_heading level0 col4" >M</th>
-      <th id="T_057b9_level0_col5" class="col_heading level0 col5" >S</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <th id="T_057b9_level0_row0" class="row_heading level0 row0" >0</th>
-      <td id="T_057b9_row0_col0" class="data row0 col0" >sepal_length</td>
-      <td id="T_057b9_row0_col1" class="data row0 col1" >setosa</td>
-      <td id="T_057b9_row0_col2" class="data row0 col2" >1.0000</td>
-      <td id="T_057b9_row0_col3" class="data row0 col3" >1.0000</td>
-      <td id="T_057b9_row0_col4" class="data row0 col4" >0.4140</td>
-      <td id="T_057b9_row0_col5" class="data row0 col5" >0.8828</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row1" class="row_heading level0 row1" >1</th>
-      <td id="T_057b9_row1_col0" class="data row1 col0" >sepal_width</td>
-      <td id="T_057b9_row1_col1" class="data row1 col1" >setosa</td>
-      <td id="T_057b9_row1_col2" class="data row1 col2" >0.9459</td>
-      <td id="T_057b9_row1_col3" class="data row1 col3" >1.0000</td>
-      <td id="T_057b9_row1_col4" class="data row1 col4" >0.1980</td>
-      <td id="T_057b9_row1_col5" class="data row1 col5" >0.8179</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row2" class="row_heading level0 row2" >2</th>
-      <td id="T_057b9_row2_col0" class="data row2 col0" >petal_length</td>
-      <td id="T_057b9_row2_col1" class="data row2 col1" >setosa</td>
-      <td id="T_057b9_row2_col2" class="data row2 col2" >1.0000</td>
-      <td id="T_057b9_row2_col3" class="data row2 col3" >1.0000</td>
-      <td id="T_057b9_row2_col4" class="data row2 col4" >0.4558</td>
-      <td id="T_057b9_row2_col5" class="data row2 col5" >0.8912</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row3" class="row_heading level0 row3" >3</th>
-      <td id="T_057b9_row3_col0" class="data row3 col0" >petal_width</td>
-      <td id="T_057b9_row3_col1" class="data row3 col1" >setosa</td>
-      <td id="T_057b9_row3_col2" class="data row3 col2" >1.0000</td>
-      <td id="T_057b9_row3_col3" class="data row3 col3" >1.0000</td>
-      <td id="T_057b9_row3_col4" class="data row3 col4" >0.4274</td>
-      <td id="T_057b9_row3_col5" class="data row3 col5" >0.8855</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row4" class="row_heading level0 row4" >4</th>
-      <td id="T_057b9_row4_col0" class="data row4 col0" >petal_shape</td>
-      <td id="T_057b9_row4_col1" class="data row4 col1" >setosa</td>
-      <td id="T_057b9_row4_col2" class="data row4 col2" >0.5563</td>
-      <td id="T_057b9_row4_col3" class="data row4 col3" >0.4577</td>
-      <td id="T_057b9_row4_col4" class="data row4 col4" >0.2398</td>
-      <td id="T_057b9_row4_col5" class="data row4 col5" >0.4535</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row5" class="row_heading level0 row5" >5</th>
-      <td id="T_057b9_row5_col0" class="data row5 col0" >sepal_dominance</td>
-      <td id="T_057b9_row5_col1" class="data row5 col1" >setosa</td>
-      <td id="T_057b9_row5_col2" class="data row5 col2" >1.0000</td>
-      <td id="T_057b9_row5_col3" class="data row5 col3" >1.0000</td>
-      <td id="T_057b9_row5_col4" class="data row5 col4" >1.0000</td>
-      <td id="T_057b9_row5_col5" class="data row5 col5" >1.0000</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row6" class="row_heading level0 row6" >6</th>
-      <td id="T_057b9_row6_col0" class="data row6 col0" >sepal_length</td>
-      <td id="T_057b9_row6_col1" class="data row6 col1" >versicolor</td>
-      <td id="T_057b9_row6_col2" class="data row6 col2" >0.0276</td>
-      <td id="T_057b9_row6_col3" class="data row6 col3" >0.1304</td>
-      <td id="T_057b9_row6_col4" class="data row6 col4" >0.0050</td>
-      <td id="T_057b9_row6_col5" class="data row6 col5" >0.0642</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row7" class="row_heading level0 row7" >7</th>
-      <td id="T_057b9_row7_col0" class="data row7 col0" >sepal_width</td>
-      <td id="T_057b9_row7_col1" class="data row7 col1" >versicolor</td>
-      <td id="T_057b9_row7_col2" class="data row7 col2" >0.7227</td>
-      <td id="T_057b9_row7_col3" class="data row7 col3" >1.0000</td>
-      <td id="T_057b9_row7_col4" class="data row7 col4" >0.1545</td>
-      <td id="T_057b9_row7_col5" class="data row7 col5" >0.7200</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row8" class="row_heading level0 row8" >8</th>
-      <td id="T_057b9_row8_col0" class="data row8 col0" >petal_length</td>
-      <td id="T_057b9_row8_col1" class="data row8 col1" >versicolor</td>
-      <td id="T_057b9_row8_col2" class="data row8 col2" >0.1179</td>
-      <td id="T_057b9_row8_col3" class="data row8 col3" >0.3843</td>
-      <td id="T_057b9_row8_col4" class="data row8 col4" >0.0012</td>
-      <td id="T_057b9_row8_col5" class="data row8 col5" >0.2011</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row9" class="row_heading level0 row9" >9</th>
-      <td id="T_057b9_row9_col0" class="data row9 col0" >petal_width</td>
-      <td id="T_057b9_row9_col1" class="data row9 col1" >versicolor</td>
-      <td id="T_057b9_row9_col2" class="data row9 col2" >0.0473</td>
-      <td id="T_057b9_row9_col3" class="data row9 col3" >0.1999</td>
-      <td id="T_057b9_row9_col4" class="data row9 col4" >0.0068</td>
-      <td id="T_057b9_row9_col5" class="data row9 col5" >0.1002</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row10" class="row_heading level0 row10" >10</th>
-      <td id="T_057b9_row10_col0" class="data row10 col0" >petal_shape</td>
-      <td id="T_057b9_row10_col1" class="data row10 col1" >versicolor</td>
-      <td id="T_057b9_row10_col2" class="data row10 col2" >0.0885</td>
-      <td id="T_057b9_row10_col3" class="data row10 col3" >0.1476</td>
-      <td id="T_057b9_row10_col4" class="data row10 col4" >0.0183</td>
-      <td id="T_057b9_row10_col5" class="data row10 col5" >0.0981</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row11" class="row_heading level0 row11" >11</th>
-      <td id="T_057b9_row11_col0" class="data row11 col0" >sepal_dominance</td>
-      <td id="T_057b9_row11_col1" class="data row11 col1" >versicolor</td>
-      <td id="T_057b9_row11_col2" class="data row11 col2" >0.6523</td>
-      <td id="T_057b9_row11_col3" class="data row11 col3" >0.5000</td>
-      <td id="T_057b9_row11_col4" class="data row11 col4" >0.2740</td>
-      <td id="T_057b9_row11_col5" class="data row11 col5" >0.5157</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row12" class="row_heading level0 row12" >12</th>
-      <td id="T_057b9_row12_col0" class="data row12 col0" >sepal_length</td>
-      <td id="T_057b9_row12_col1" class="data row12 col1" >virginica</td>
-      <td id="T_057b9_row12_col2" class="data row12 col2" >1.0000</td>
-      <td id="T_057b9_row12_col3" class="data row12 col3" >1.0000</td>
-      <td id="T_057b9_row12_col4" class="data row12 col4" >0.2605</td>
-      <td id="T_057b9_row12_col5" class="data row12 col5" >0.8521</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row13" class="row_heading level0 row13" >13</th>
-      <td id="T_057b9_row13_col0" class="data row13 col0" >sepal_width</td>
-      <td id="T_057b9_row13_col1" class="data row13 col1" >virginica</td>
-      <td id="T_057b9_row13_col2" class="data row13 col2" >0.0296</td>
-      <td id="T_057b9_row13_col3" class="data row13 col3" >0.1381</td>
-      <td id="T_057b9_row13_col4" class="data row13 col4" >0.0035</td>
-      <td id="T_057b9_row13_col5" class="data row13 col5" >0.0677</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row14" class="row_heading level0 row14" >14</th>
-      <td id="T_057b9_row14_col0" class="data row14 col0" >petal_length</td>
-      <td id="T_057b9_row14_col1" class="data row14 col1" >virginica</td>
-      <td id="T_057b9_row14_col2" class="data row14 col2" >1.0000</td>
-      <td id="T_057b9_row14_col3" class="data row14 col3" >1.0000</td>
-      <td id="T_057b9_row14_col4" class="data row14 col4" >0.5031</td>
-      <td id="T_057b9_row14_col5" class="data row14 col5" >0.9006</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row15" class="row_heading level0 row15" >15</th>
-      <td id="T_057b9_row15_col0" class="data row15 col0" >petal_width</td>
-      <td id="T_057b9_row15_col1" class="data row15 col1" >virginica</td>
-      <td id="T_057b9_row15_col2" class="data row15 col2" >1.0000</td>
-      <td id="T_057b9_row15_col3" class="data row15 col3" >1.0000</td>
-      <td id="T_057b9_row15_col4" class="data row15 col4" >0.5384</td>
-      <td id="T_057b9_row15_col5" class="data row15 col5" >0.9077</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row16" class="row_heading level0 row16" >16</th>
-      <td id="T_057b9_row16_col0" class="data row16 col0" >petal_shape</td>
-      <td id="T_057b9_row16_col1" class="data row16 col1" >virginica</td>
-      <td id="T_057b9_row16_col2" class="data row16 col2" >0.9255</td>
-      <td id="T_057b9_row16_col3" class="data row16 col3" >0.6053</td>
-      <td id="T_057b9_row16_col4" class="data row16 col4" >0.2937</td>
-      <td id="T_057b9_row16_col5" class="data row16 col5" >0.6711</td>
-    </tr>
-    <tr>
-      <th id="T_057b9_level0_row17" class="row_heading level0 row17" >17</th>
-      <td id="T_057b9_row17_col0" class="data row17 col0" >sepal_dominance</td>
-      <td id="T_057b9_row17_col1" class="data row17 col1" >virginica</td>
-      <td id="T_057b9_row17_col2" class="data row17 col2" >0.6523</td>
-      <td id="T_057b9_row17_col3" class="data row17 col3" >0.5000</td>
-      <td id="T_057b9_row17_col4" class="data row17 col4" >0.2740</td>
-      <td id="T_057b9_row17_col5" class="data row17 col5" >0.5157</td>
-    </tr>
-  </tbody>
-</table>
-
-
-
-
 ### Discriminative Score Visualization — Average Feature Importance
 
 
@@ -2782,7 +2736,7 @@ plt.show()
 
 
     
-![png](README_files/I-MLP_108_0.png)
+![png](README_files/I-MLP_109_0.png)
     
 
 
@@ -2805,7 +2759,7 @@ plt.show()
 
 
     
-![png](README_files/I-MLP_110_0.png)
+![png](README_files/I-MLP_111_0.png)
     
 
 
@@ -4016,7 +3970,7 @@ plot_accuracy_pies(train_acc_full, test_acc_full)
 
 
     
-![png](README_files/I-MLP_149_0.png)
+![png](README_files/I-MLP_150_0.png)
     
 
 
@@ -4027,7 +3981,7 @@ plot_confusion_matrix(y_true_full, y_pred_full, CLASS_NAMES)
 
 
     
-![png](README_files/I-MLP_150_0.png)
+![png](README_files/I-MLP_151_0.png)
     
 
 
@@ -4038,7 +3992,7 @@ plot_loss_curves(train_losses_full, val_losses_full)
 
 
     
-![png](README_files/I-MLP_151_0.png)
+![png](README_files/I-MLP_152_0.png)
     
 
 
@@ -4066,7 +4020,7 @@ plot_roc_curves(y_true_full, y_probs_full, CLASS_NAMES)
 
 
     
-![png](README_files/I-MLP_153_0.png)
+![png](README_files/I-MLP_154_0.png)
     
 
 
@@ -4099,7 +4053,7 @@ run_shap_analysis(model_full, X_tr_full, X_te_full, CLASS_NAMES, DEVICE)
 
 
     
-![png](README_files/I-MLP_156_1.png)
+![png](README_files/I-MLP_157_1.png)
     
 
 
@@ -4208,7 +4162,7 @@ plot_accuracy_pies(train_acc_lean, test_acc_lean)
 
 
     
-![png](README_files/I-MLP_163_0.png)
+![png](README_files/I-MLP_164_0.png)
     
 
 
@@ -4219,7 +4173,7 @@ plot_confusion_matrix(y_true_lean, y_pred_lean, CLASS_NAMES)
 
 
     
-![png](README_files/I-MLP_164_0.png)
+![png](README_files/I-MLP_165_0.png)
     
 
 
@@ -4230,7 +4184,7 @@ plot_loss_curves(train_losses_lean, val_losses_lean)
 
 
     
-![png](README_files/I-MLP_165_0.png)
+![png](README_files/I-MLP_166_0.png)
     
 
 
@@ -4258,7 +4212,7 @@ plot_roc_curves(y_true_lean, y_probs_lean, CLASS_NAMES)
 
 
     
-![png](README_files/I-MLP_167_0.png)
+![png](README_files/I-MLP_168_0.png)
     
 
 
@@ -4291,7 +4245,7 @@ run_shap_analysis(model_lean, X_tr_lean, X_te_lean, CLASS_NAMES, DEVICE)
 
 
     
-![png](README_files/I-MLP_170_1.png)
+![png](README_files/I-MLP_171_1.png)
     
 
 
