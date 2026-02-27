@@ -35,7 +35,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import shap
 from scipy import stats
 from sklearn.metrics import (
     accuracy_score,
@@ -69,7 +68,7 @@ torch.manual_seed(SEED)
 
 
 
-    <torch._C.Generator at 0x145d60bb0>
+    <torch._C.Generator at 0x11aae47b0>
 
 
 
@@ -102,6 +101,8 @@ H2 = 8
 OUT_FEATURES = 3
 TEST_SIZE = 0.3
 DATA_PATH = "iris.csv"
+SCALAR_PATH = "iris_scaler.pkl"
+MODEL_PATH = "iris_model.pth"
 TARGET_VAR = "species"
 CLASS_NAMES = ["Setosa", "Versicolor", "Virginica"]
 SPECIES_MAP = {0: "setosa", 1: "versicolor", 2: "virginica"}
@@ -252,7 +253,7 @@ df
 df.info()
 ```
 
-    <class 'pandas.core.frame.DataFrame'>
+    <class 'pandas.DataFrame'>
     RangeIndex: 150 entries, 0 to 149
     Data columns (total 5 columns):
      #   Column        Non-Null Count  Dtype  
@@ -261,9 +262,9 @@ df.info()
      1   sepal_width   150 non-null    float64
      2   petal_length  150 non-null    float64
      3   petal_width   150 non-null    float64
-     4   species       150 non-null    object 
-    dtypes: float64(4), object(1)
-    memory usage: 6.0+ KB
+     4   species       150 non-null    str    
+    dtypes: float64(4), str(1)
+    memory usage: 6.0 KB
 
 
 ## Clean Dataset
@@ -497,7 +498,7 @@ df_clean["petal_shape"]
     147        round
     148        round
     149        round
-    Name: petal_shape, Length: 150, dtype: object
+    Name: petal_shape, Length: 150, dtype: str
 
 
 
@@ -527,7 +528,7 @@ df_clean["sepal_dominance"]
     147          balanced
     148          balanced
     149          balanced
-    Name: sepal_dominance, Length: 150, dtype: object
+    Name: sepal_dominance, Length: 150, dtype: str
 
 
 
@@ -1266,9 +1267,9 @@ df_eda.dtypes
     sepal_width        float64
     petal_length       float64
     petal_width        float64
-    species             object
-    petal_shape         object
-    sepal_dominance     object
+    species                str
+    petal_shape            str
+    sepal_dominance        str
     dtype: object
 
 
@@ -1349,7 +1350,7 @@ else:
     setosa        33.3%
     versicolor    33.3%
     virginica     33.3%
-    Name: count, dtype: object
+    Name: count, dtype: str
     
     Balance Ratio: 1.00
     Assessment: Well-Balanced ✅
@@ -1947,9 +1948,9 @@ df_eda.dtypes
     sepal_width        float64
     petal_length       float64
     petal_width        float64
-    species             object
-    petal_shape         object
-    sepal_dominance     object
+    species                str
+    petal_shape            str
+    sepal_dominance        str
     dtype: object
 
 
@@ -2160,7 +2161,7 @@ plt.show()
     
 
 
-### Create `features` Variable for Audit & Modeling
+### Create `features` Variable for Audit
 
 
 ```python
@@ -3061,6 +3062,26 @@ df_preprocessed
 
 
 
+### Update `features` Variable for Modeling
+
+
+```python
+features = [col for col in df_preprocessed.columns if col != TARGET_VAR]
+features
+```
+
+
+
+
+    ['sepal_length',
+     'sepal_width',
+     'petal_length',
+     'petal_width',
+     'petal_shape',
+     'sepal_dominance']
+
+
+
 ## Reusable ML Pipeline
 
 ### Model Architecture
@@ -3687,73 +3708,6 @@ def print_summary_metrics(y_true, y_pred, y_probs):
     print("-" * 90)
 ```
 
-### SHAP Functions
-
-
-```python
-def _create_predict_fn(model, device):
-    """
-    Create a SHAP-compatible prediction function from a PyTorch model.
-
-    Parameters:
-        model (nn.Module): Trained PyTorch model.
-        device (torch.device): Computing device.
-
-    Returns:
-        callable: Function mapping numpy arrays to softmax probabilities.
-    """
-
-    def predict_fn(data_numpy):
-        """Convert numpy input to softmax probabilities via the model."""
-        tensor = torch.tensor(data_numpy).float().to(device)
-        model.eval()
-        with torch.no_grad():
-            return F.softmax(model(tensor), dim=1).cpu().numpy()
-
-    return predict_fn
-
-
-def _build_shap_explainer(model, X_train_scaled, device, n_background=100):
-    """
-    Build SHAP KernelExplainer with summarized training background.
-
-    Parameters:
-        model (nn.Module): Trained model.
-        X_train_scaled (pd.DataFrame): Scaled training features.
-        device (torch.device): Computing device.
-        n_background (int): Number of background samples for KernelExplainer.
-
-    Returns:
-        shap.KernelExplainer: Configured SHAP explainer.
-    """
-    predict_fn = _create_predict_fn(model, device)
-    n_unique = len(np.unique(X_train_scaled.values, axis=0))
-    background = shap.kmeans(X_train_scaled.values, min(n_background, n_unique))
-    return shap.KernelExplainer(predict_fn, background)
-
-
-def run_shap_analysis(model, X_train_scaled, X_test_scaled, class_names, device):
-    """
-    Run SHAP analysis and display global feature importance bar plot.
-
-    Parameters:
-        model (nn.Module): Trained model.
-        X_train_scaled (pd.DataFrame): Scaled training features.
-        X_test_scaled (pd.DataFrame): Scaled test features.
-        class_names (list): Human-readable class names.
-        device (torch.device): Computing device.
-    """
-    explainer = _build_shap_explainer(model, X_train_scaled, device)
-    shap_values = explainer.shap_values(X_test_scaled.values)
-    plt.figure(figsize=(10, 5))
-    shap.summary_plot(
-        shap_values, X_test_scaled, class_names=class_names, plot_type="bar", show=False
-    )
-    plt.xlabel("Average Absolute SHAP Value (Feature Importance)")
-    plt.tight_layout()
-    plt.show()
-```
-
 ### Inference Functions
 
 
@@ -3812,14 +3766,14 @@ def predict(model, features, species_map, device):
         return species_map[pred_class], confidence
 ```
 
-## Full-Feature Model (6 Features)
+## Model
 
 ### Data Preparation & Training
 
 
 ```python
 # Prepare data using all features (train/val/test from early split)
-X_tr_full, X_val_full, X_te_full, y_tr_full, y_val_full, y_te_full, scaler_full = (
+X_tr_full, X_val_full, X_te_full, y_tr_full, y_val_full, y_te_full, scaler = (
     prepare_data(df_train, df_test, features, TARGET_VAR, VAL_SIZE, SEED)
 )
 train_loader_full, val_loader_full, test_loader_full = create_loaders(
@@ -3852,7 +3806,7 @@ optimizer = torch.optim.AdamW(model_full.parameters(), lr=LR)
 full_config = {
     "epochs": EPOCHS,
     "log_interval": LOG_INTERVAL,
-    "save_path": "iris_model_full.pth",
+    "save_path": MODEL_PATH,
     "patience": PATIENCE,
 }
 train_losses_full, val_losses_full, best_full = train_model(
@@ -3942,7 +3896,7 @@ print(f"\nBest Validation Loss: {best_full:.4f}")
     Best Validation Loss: 0.0001
 
 
-### Evaluate Full-Feature Model
+### Evaluate Model
 
 
 ```python
@@ -4040,222 +3994,13 @@ print_summary_metrics(y_true_full, y_pred_full, y_probs_full)
     ------------------------------------------------------------------------------------------
 
 
-### SHAP Analysis — Full-Feature Model
+### Save Model Artifacts
 
 
 ```python
-run_shap_analysis(model_full, X_tr_full, X_te_full, CLASS_NAMES, DEVICE)
-```
-
-
-      0%|          | 0/45 [00:00<?, ?it/s]
-
-
-
-    
-![png](README_files/I-MLP_157_1.png)
-    
-
-
-## Lean-Feature Model (3 Features)
-
-### Data Preparation & Training
-
-
-```python
-# Select lean feature set based on discriminative score + domain knowledge
-features_lean = ["sepal_dominance", "petal_width", "petal_length"]
-X_tr_lean, X_val_lean, X_te_lean, y_tr_lean, y_val_lean, y_te_lean, scaler_lean = (
-    prepare_data(df_train, df_test, features_lean, TARGET_VAR, VAL_SIZE, SEED)
-)
-train_loader_lean, val_loader_lean, test_loader_lean = create_loaders(
-    X_tr_lean,
-    X_val_lean,
-    X_te_lean,
-    y_tr_lean,
-    y_val_lean,
-    y_te_lean,
-    DEVICE,
-    BATCH_SIZE,
-)
-print(f"Features ({len(features_lean)}): {features_lean}")
-print(f"Train: {len(y_tr_lean)}, Val: {len(y_val_lean)}, Test: {len(y_te_lean)}")
-```
-
-    Features (3): ['sepal_dominance', 'petal_width', 'petal_length']
-    Train: 89, Val: 16, Test: 45
-
-
-
-```python
-# Create and train the lean-feature model
-model_lean = IrisMLP(
-    in_features=len(features_lean),
-    h1=H1,
-    h2=H2,
-    out_features=OUT_FEATURES,
-    dropout=DROPOUT,
-).to(DEVICE)
-class_weights_lean = _compute_class_weights(y_tr_lean, DEVICE)
-criterion = nn.CrossEntropyLoss(weight=class_weights_lean)
-optimizer = torch.optim.AdamW(model_lean.parameters(), lr=LR)
-lean_config = {
-    "epochs": EPOCHS,
-    "log_interval": LOG_INTERVAL,
-    "save_path": "iris_model_lean.pth",
-    "patience": PATIENCE,
-}
-train_losses_lean, val_losses_lean, best_lean = train_model(
-    model_lean, train_loader_lean, val_loader_lean, criterion, optimizer, lean_config
-)
-print(f"\nBest Validation Loss: {best_lean:.4f}")
-```
-
-    Epoch 0/1000 - Train: 1.1037 - Val: 1.0816
-    Epoch 10/1000 - Train: 0.4595 - Val: 0.3949
-    Epoch 20/1000 - Train: 0.1058 - Val: 0.0388
-    Epoch 30/1000 - Train: 0.0662 - Val: 0.0105
-    Epoch 40/1000 - Train: 0.0599 - Val: 0.0065
-    Epoch 50/1000 - Train: 0.0545 - Val: 0.0055
-    Epoch 60/1000 - Train: 0.0562 - Val: 0.0054
-    Epoch 70/1000 - Train: 0.0531 - Val: 0.0035
-    Epoch 80/1000 - Train: 0.0605 - Val: 0.0061
-    Epoch 90/1000 - Train: 0.0542 - Val: 0.0045
-    Epoch 100/1000 - Train: 0.0594 - Val: 0.0055
-    Epoch 110/1000 - Train: 0.0568 - Val: 0.0037
-    Epoch 120/1000 - Train: 0.0550 - Val: 0.0043
-    Epoch 130/1000 - Train: 0.0527 - Val: 0.0031
-    Epoch 140/1000 - Train: 0.0530 - Val: 0.0040
-    Epoch 150/1000 - Train: 0.0557 - Val: 0.0041
-    Epoch 160/1000 - Train: 0.0574 - Val: 0.0050
-    Epoch 170/1000 - Train: 0.0559 - Val: 0.0029
-    Early stopping at epoch 173 (patience=50)
-    
-    Best Validation Loss: 0.0025
-
-
-### Evaluate Lean-Feature Model
-
-
-```python
-# Collect predictions and compute accuracy
-y_true_lean, y_pred_lean, y_probs_lean = collect_predictions(
-    model_lean, test_loader_lean
-)
-train_acc_lean = accuracy_score(*collect_predictions(model_lean, train_loader_lean)[:2])
-val_acc_lean = accuracy_score(*collect_predictions(model_lean, val_loader_lean)[:2])
-test_acc_lean = accuracy_score(y_true_lean, y_pred_lean)
-print(f"Train Accuracy: {train_acc_lean:.4f}")
-print(f"Val Accuracy:   {val_acc_lean:.4f}")
-print(f"Test Accuracy:  {test_acc_lean:.4f}")
-```
-
-    Train Accuracy: 0.9663
-    Val Accuracy:   1.0000
-    Test Accuracy:  0.9333
-
-
-
-```python
-plot_accuracy_pies(train_acc_lean, test_acc_lean)
-```
-
-
-    
-![png](README_files/I-MLP_164_0.png)
-    
-
-
-
-```python
-plot_confusion_matrix(y_true_lean, y_pred_lean, CLASS_NAMES)
-```
-
-
-    
-![png](README_files/I-MLP_165_0.png)
-    
-
-
-
-```python
-plot_loss_curves(train_losses_lean, val_losses_lean)
-```
-
-
-    
-![png](README_files/I-MLP_166_0.png)
-    
-
-
-
-```python
-print(classification_report(y_true_lean, y_pred_lean, target_names=CLASS_NAMES))
-```
-
-                  precision    recall  f1-score   support
-    
-          Setosa       1.00      1.00      1.00        15
-      Versicolor       0.88      0.93      0.90        15
-       Virginica       0.93      0.87      0.90        15
-    
-        accuracy                           0.93        45
-       macro avg       0.93      0.93      0.93        45
-    weighted avg       0.93      0.93      0.93        45
-    
-
-
-
-```python
-plot_roc_curves(y_true_lean, y_probs_lean, CLASS_NAMES)
-```
-
-
-    
-![png](README_files/I-MLP_168_0.png)
-    
-
-
-
-```python
-print_summary_metrics(y_true_lean, y_pred_lean, y_probs_lean)
-```
-
-    ------------------------------------------------------------------------------------------
-    METRIC          SCORE      DESCRIPTION
-    ------------------------------------------------------------------------------------------
-    Accuracy        0.9333     Overall correctness (caution: misleading if imbalanced)
-    Precision       0.9345     When predicting positive, how often correct?
-    Recall          0.9333     Of all actual positives, how many found?
-    F1-Score        0.9333     Harmonic mean of Precision & Recall
-    ROC AUC         0.9941     Class separability (1.0 = perfect)
-    ------------------------------------------------------------------------------------------
-
-
-### SHAP Analysis — Lean-Feature Model
-
-
-```python
-run_shap_analysis(model_lean, X_tr_lean, X_te_lean, CLASS_NAMES, DEVICE)
-```
-
-
-      0%|          | 0/45 [00:00<?, ?it/s]
-
-
-
-    
-![png](README_files/I-MLP_171_1.png)
-    
-
-
-### Save Lean Model Artifacts
-
-
-```python
-# Save lean model scaler for production inference
-joblib.dump(scaler_lean, "iris_scaler.pkl")
-print("Scaler Saved: 'iris_scaler.pkl'")
+# Save model scaler for production inference
+joblib.dump(scaler, SCALAR_PATH)
+print(f"Scaler Saved: '{SCALAR_PATH}'")
 ```
 
     Scaler Saved: 'iris_scaler.pkl'
@@ -4268,24 +4013,24 @@ print("Scaler Saved: 'iris_scaler.pkl'")
 
 ```python
 loaded_model = IrisMLP(
-    in_features=len(features_lean), h1=H1, h2=H2, out_features=OUT_FEATURES
+    in_features=len(features), h1=H1, h2=H2, out_features=OUT_FEATURES
 ).to(DEVICE)
 loaded_model.load_state_dict(
-    torch.load("iris_model_lean.pth", map_location=DEVICE, weights_only=True)
+    torch.load(MODEL_PATH, map_location=DEVICE, weights_only=True)
 )
 loaded_model.eval()
-print("Model Loaded: 'iris_model_lean.pth'")
+print(f"Model Loaded: '{MODEL_PATH}'")
 ```
 
-    Model Loaded: 'iris_model_lean.pth'
+    Model Loaded: 'iris_model.pth'
 
 
 ### Load Scaler
 
 
 ```python
-scaler = joblib.load("iris_scaler.pkl")
-print("Scaler Loaded: 'iris_scaler.pkl'")
+scaler = joblib.load(SCALAR_PATH)
+print(f"Scaler Loaded: '{SCALAR_PATH}'")
 ```
 
     Scaler Loaded: 'iris_scaler.pkl'
@@ -4295,11 +4040,21 @@ print("Scaler Loaded: 'iris_scaler.pkl'")
 
 
 ```python
-# 1. Define Raw Data (matching features_lean order: sepal_dominance, petal_width, petal_length)
-sepal_dominance = 1.0  # setosa IS sepal_dominant (sepal_length > 2*petal_length)
-petal_width = 0.2  # small petal width -> setosa characteristic
+# 1. Define Raw Data (matching features order: sepal_length, sepal_width, petal_length, petal_width, petal_shape, sepal_dominance)
+sepal_length = 5.1  # typical setosa sepal length
+sepal_width = 3.5  # typical setosa sepal width
 petal_length = 1.4  # small petal length -> setosa characteristic
-raw_flower = [sepal_dominance, petal_width, petal_length]
+petal_width = 0.2  # small petal width -> setosa characteristic
+petal_shape = 1.0  # petal_length / petal_width category
+sepal_dominance = 1.0  # setosa IS sepal_dominant (sepal_length > 2*petal_length)
+raw_flower = [
+    sepal_length,
+    sepal_width,
+    petal_length,
+    petal_width,
+    petal_shape,
+    sepal_dominance,
+]
 
 # 2. CRITICAL: Scale using the fitted scaler from training
 scaled_flower = scaler.transform([raw_flower])
@@ -4311,7 +4066,7 @@ print(f"Predicted Species: {species}")
 print(f"Confidence:        {confidence:.2%}")
 ```
 
-    Raw Input:         [1.0, 0.2, 1.4]
+    Raw Input:         [5.1, 3.5, 1.4, 0.2, 1.0, 1.0]
     Predicted Species: setosa
-    Confidence:        99.98%
+    Confidence:        100.00%
 
